@@ -1,4 +1,4 @@
-export type ActivityType = 
+export type ActivityType =
   | 'تجارة عامة'
   | 'مقاولات وبناء'
   | 'استشارات وخدمات'
@@ -8,15 +8,10 @@ export type ActivityType =
   | 'نقليات وشحن'
   | 'أخرى';
 
-export type DocumentType = 
+export type DocumentType =
   | 'مبيعات'
   | 'مشتريات'
-  | 'مصروفات'
-  | 'مرتجعات'
-  | 'فاتورة ضريبية'
-  | 'سند قبض'
-  | 'سند صرف'
-  | 'أخرى';
+  | 'يحتاج تحديد النوع';
 
 export type InvoiceStatus = 'لم تبدأ' | 'قيد المعالجة' | 'تحتاج مراجعة' | 'مكتملة' | 'فشل';
 
@@ -26,12 +21,12 @@ export interface InvoiceItem {
   id: string;
   name: string;
   code?: string;
-  quantity: number;
-  unit: string;
-  unitPrice: number;
-  discount: number;
-  tax: number;
-  total: number;
+  quantity?: number;
+  unit?: string;
+  unitPrice?: number;
+  discount?: number;
+  tax?: number;
+  total?: number;
 }
 
 export interface CustomField {
@@ -49,26 +44,28 @@ export interface CustomField {
 export interface InvoiceRecord {
   id: string; // internal unique ID
   invoiceNumber: string;
-  invoiceDate: string;
+  invoiceDate: string; // empty string when unreadable/missing
   documentType: DocumentType;
   issuerName: string;
   clientName: string;
   issuerTaxId: string;
   clientTaxId: string;
   currency: string;
-  subtotal: number;
-  taxAmount: number;
-  taxRate: number;
-  discount: number;
-  grandTotal: number;
+  subtotal?: number;
+  taxAmount?: number;
+  taxRate?: number;
+  discount?: number;
+  grandTotal?: number;
   notes: string;
   items: InvoiceItem[];
   customFieldsValues: Record<string, any>;
   status: InvoiceStatus;
-  imageBase64?: string;
+  hasImage?: boolean;
+  imageBase64?: string; // hydrated from IndexedDB in memory; stripped before localStorage save
   imageMimeType?: string;
   imageFileName?: string;
   errorMessage?: string;
+  classificationReason?: string;
   createdAt: string;
   updatedAt: string;
   // Official template specific fields
@@ -81,9 +78,20 @@ export interface InvoiceRecord {
   balance?: number;
 }
 
-export interface ExcelMapping {
+export interface ExportTrackingEntry {
+  invoiceId: string;
+  operationId: string;
   sheetName: string;
-  columnMap: Record<string, string>; // system field -> excel column name
+  rowNumber: number;
+  exportedAt: string;
+}
+
+export interface ExportTrackingRecord {
+  operationId: string;
+  lastExportedAt: string;
+  templateSha256: string;
+  exportedInvoiceIds: string[];
+  entries: ExportTrackingEntry[];
 }
 
 export interface Operation {
@@ -92,9 +100,8 @@ export interface Operation {
   activityType: ActivityType;
   createdAt: string;
   updatedAt: string;
-  templateType: 'new' | 'custom';
+  templateType: 'official';
   customFields: CustomField[];
   invoices: InvoiceRecord[];
   excelFileName: string;
-  excelBase64?: string; // stored binary of xlsx file
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { X, Upload, Sparkles, FileText, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Upload, Sparkles, Loader2, PenLine, AlertCircle } from 'lucide-react';
 import { InvoiceRecord, Operation, DocumentType } from '../types';
+import { saveInvoiceImage } from '../services/dbService';
 
 interface BatchUploadModalProps {
   isOpen: boolean;
@@ -10,6 +11,27 @@ interface BatchUploadModalProps {
   onStartReview: (invoiceId: string) => void;
 }
 
+function toOptionalNum(val: any): number | undefined {
+  if (val === null || val === undefined || val === '') return undefined;
+  const num = Number(val);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 2): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(url, options);
+    lastRes = res;
+    if (res.status !== 429 && res.status !== 503) {
+      return res;
+    }
+    if (attempt < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+    }
+  }
+  return lastRes!;
+}
+
 export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   isOpen,
   onClose,
@@ -17,13 +39,27 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   onUpdateOperation,
   onStartReview,
 }) => {
-  const [entryType, setEntryType] = useState<DocumentType>('مبيعات');
+  const [mode, setMode] = useState<'ai' | 'manual'>('ai');
+  const [manualType, setManualType] = useState<'مبيعات' | 'مشتريات'>('مبيعات');
   const [selectedFiles, setSelectedFiles] = useState<{ file: File; base64: string; mimeType: string }[]>([]);
   const [extracting, setExtracting] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, success: 0, failed: 0 });
   const [errorMsg, setErrorMsg] = useState('');
 
   if (!isOpen) return null;
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const res = reader.result as string;
+        const base64Data = res.split(',')[1] || res;
+        resolve(base64Data);
+      };
+      reader.onerror = (error) => reject(error);
+    });
+  };
 
   const handleFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -37,128 +73,163 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         newItems.push({
           file,
           base64,
-          mimeType: file.type || 'image/jpeg'
+          mimeType: file.type || 'image/jpeg',
         });
       } catch (err) {
         console.error('Error reading file:', err);
+        setErrorMsg('تعذر قراءة أحد الملفات المختارة.');
       }
     }
 
-    setSelectedFiles(prev => [...prev, ...newItems]);
+    setSelectedFiles((prev) => [...prev, ...newItems]);
   };
 
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        const res = reader.result as string;
-        const base64Data = res.split(',')[1] || res;
-        resolve(base64Data);
-      };
-      reader.onerror = error => reject(error);
-    });
-  };
-
-  const handleStartExtraction = async (useAI: boolean) => {
+  const handleStartProcessing = async () => {
     if (selectedFiles.length === 0) return;
 
+    const useAI = mode === 'ai';
     setExtracting(true);
+    setErrorMsg('');
     setProgress({ current: 0, total: selectedFiles.length, success: 0, failed: 0 });
 
-    const updatedInvoices = [...(operation.invoices || [])];
+    let workingInvoices = [...(operation.invoices || [])];
     let successCount = 0;
     let failedCount = 0;
+    let firstCreatedId: string | null = null;
 
     for (let i = 0; i < selectedFiles.length; i++) {
-      setProgress(p => ({ ...p, current: i + 1 }));
+      setProgress((p) => ({ ...p, current: i + 1 }));
       const item = selectedFiles[i];
-      const invId = 'inv_' + Date.now() + Math.random().toString(36).substring(2, 6);
+      const invId = 'inv_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      if (!firstCreatedId) firstCreatedId = invId;
+      const nowDate = new Date().toISOString().split('T')[0];
+
+      // Persist image immediately in IndexedDB
+      try {
+        await saveInvoiceImage(invId, item.base64, item.mimeType);
+      } catch (err) {
+        console.error('IndexedDB save image error:', err);
+      }
 
       const newRecord: InvoiceRecord = {
         id: invId,
         invoiceNumber: '',
-        invoiceDate: new Date().toISOString().split('T')[0],
-        documentType: entryType,
+        invoiceDate: '', // NEVER default missing invoice date to today
+        documentType: useAI ? 'يحتاج تحديد النوع' : manualType,
         issuerName: '',
         clientName: '',
         issuerTaxId: '',
         clientTaxId: '',
-        currency: 'SAR',
-        subtotal: 0,
-        taxAmount: 0,
-        taxRate: 0,
-        discount: 0,
-        grandTotal: 0,
+        currency: '',
+        subtotal: undefined,
+        taxAmount: undefined,
+        taxRate: undefined,
+        discount: undefined,
+        grandTotal: undefined,
         notes: '',
         items: [],
         customFieldsValues: {},
         status: useAI ? 'قيد المعالجة' : 'تحتاج مراجعة',
+        hasImage: true,
         imageBase64: item.base64,
         imageMimeType: item.mimeType,
         imageFileName: item.file.name,
-        createdAt: new Date().toISOString().split('T')[0],
-        updatedAt: new Date().toISOString().split('T')[0]
+        createdAt: nowDate,
+        updatedAt: nowDate,
       };
 
       if (useAI) {
         try {
-          const res = await fetch('/api/extract-invoice', {
+          const res = await fetchWithRetry('/api/extract-invoice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               imageBase64: item.base64,
               mimeType: item.mimeType,
-              customFields: operation.customFields
-            })
+              customFields: operation.customFields,
+              organizationName: operation.name,
+              activityType: operation.activityType,
+            }),
           });
 
           const data = await res.json();
-          if (data.success && data.data) {
+          if (res.ok && data.success && data.data) {
             const ext = data.data;
-            newRecord.invoiceNumber = ext.invoiceNumber || '';
-            newRecord.invoiceDate = ext.invoiceDate || newRecord.invoiceDate;
-            newRecord.documentType = entryType;
-            newRecord.issuerName = ext.issuerName || '';
-            newRecord.subtotal = Number(ext.subtotal || 0);
-            newRecord.taxAmount = Number(ext.taxAmount || 0);
-            newRecord.grandTotal = Number(ext.grandTotal || (newRecord.subtotal + newRecord.taxAmount));
-            
-            // For sales: leave cash & network sales empty if not explicitly split
-            if (entryType === 'مبيعات') {
-              newRecord.grandTotal = Number(ext.grandTotal || ext.subtotal || 0);
-            }
+            const classifiedType: DocumentType =
+              ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
+                ? ext.documentType
+                : 'يحتاج تحديد النوع';
 
+            newRecord.documentType = classifiedType;
+            newRecord.classificationReason = ext.classificationReason || '';
+            newRecord.invoiceNumber = ext.invoiceNumber || '';
+            newRecord.invoiceDate = ext.invoiceDate || '';
+            newRecord.day = ext.day || '';
+            newRecord.issuerName = ext.issuerName || '';
+            newRecord.clientName = ext.clientName || '';
+            newRecord.issuerTaxId = ext.issuerTaxId || '';
+            newRecord.clientTaxId = ext.clientTaxId || '';
+            newRecord.currency = ext.currency || '';
+            newRecord.subtotal = toOptionalNum(ext.subtotal);
+            newRecord.taxAmount = toOptionalNum(ext.taxAmount);
+            newRecord.taxRate = toOptionalNum(ext.taxRate);
+            newRecord.discount = toOptionalNum(ext.discount);
+            newRecord.grandTotal = toOptionalNum(ext.grandTotal);
+            newRecord.cashSales = toOptionalNum(ext.cashSales);
+            newRecord.networkSales = toOptionalNum(ext.networkSales);
+            newRecord.notes = ext.notes || '';
+            newRecord.items = Array.isArray(ext.items)
+              ? ext.items.map((it: any, idx: number) => ({
+                  id: `${invId}_item_${idx}`,
+                  name: String(it?.name || ''),
+                  code: it?.code ? String(it.code) : undefined,
+                  quantity: toOptionalNum(it?.quantity),
+                  unit: it?.unit ? String(it.unit) : undefined,
+                  unitPrice: toOptionalNum(it?.unitPrice),
+                  discount: toOptionalNum(it?.discount),
+                  tax: toOptionalNum(it?.tax),
+                  total: toOptionalNum(it?.total),
+                }))
+              : [];
+            newRecord.customFieldsValues =
+              ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
+                ? ext.customFieldsExtracted
+                : {};
             newRecord.status = 'تحتاج مراجعة';
             successCount++;
           } else {
             newRecord.status = 'فشل';
-            newRecord.errorMessage = data.error || 'فشل الاستخراج';
+            newRecord.errorMessage = data.error || 'فشل الاستخراج الذكي لهذه الفاتورة';
             failedCount++;
           }
         } catch (err: any) {
           newRecord.status = 'فشل';
-          newRecord.errorMessage = err.message || 'خطأ في الاتصال بالخادم';
+          newRecord.errorMessage = err?.message || 'خطأ في الاتصال بالخادم';
           failedCount++;
         }
       } else {
         successCount++;
       }
 
-      updatedInvoices.unshift(newRecord);
+      workingInvoices = [newRecord, ...workingInvoices];
       onUpdateOperation({
         ...operation,
-        invoices: updatedInvoices,
-        updatedAt: new Date().toISOString().split('T')[0]
+        invoices: workingInvoices,
+        updatedAt: nowDate,
       });
 
-      setProgress(p => ({ ...p, success: successCount, failed: failedCount }));
-      await new Promise(r => setTimeout(r, 800));
+      setProgress((p) => ({ ...p, success: successCount, failed: failedCount }));
+      if (useAI && i < selectedFiles.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
 
     setExtracting(false);
     setSelectedFiles([]);
     onClose();
+    if (firstCreatedId) {
+      onStartReview(firstCreatedId);
+    }
   };
 
   return (
@@ -167,9 +238,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Upload className="w-5 h-5 text-emerald-400" />
-            <h3 className="font-bold text-lg">تسجيل ورفع الفواتير والمستندات</h3>
+            <h3 className="font-bold text-lg">رفع وإضافة الفواتير والمستندات</h3>
           </div>
-          <button 
+          <button
             onClick={onClose}
             disabled={extracting}
             className="text-slate-400 hover:text-white transition p-1 rounded-lg hover:bg-slate-800 disabled:opacity-50"
@@ -180,8 +251,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
         <div className="p-6 space-y-6">
           {errorMsg && (
-            <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
-              {errorMsg}
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMsg}</span>
             </div>
           )}
 
@@ -189,48 +261,97 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             <div className="py-12 text-center space-y-4">
               <Loader2 className="w-12 h-12 text-emerald-600 animate-spin mx-auto" />
               <div>
-                <h4 className="font-bold text-slate-800 text-lg mb-1">جاري معالجة الفواتير واستخراج البيانات...</h4>
+                <h4 className="font-bold text-slate-800 text-lg mb-1">
+                  {mode === 'ai'
+                    ? 'جاري تحليل وتصنيف الفواتير بالذكاء الاصطناعي...'
+                    : 'جاري حفظ الفواتير للإدخال اليدوي...'}
+                </h4>
                 <p className="text-sm text-slate-500">
-                  تمت معالجة {progress.current} من أصل {progress.total} ملفات
+                  تمت معالجة {progress.current} من أصل {progress.total} ملفات (نجح: {progress.success} • فشل:{' '}
+                  {progress.failed})
                 </p>
               </div>
               <div className="w-full bg-slate-100 rounded-full h-3 max-w-md mx-auto overflow-hidden">
-                <div 
+                <div
                   className="bg-emerald-600 h-full transition-all duration-300"
-                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                  style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }}
                 ></div>
               </div>
             </div>
           ) : (
             <>
-              {/* Type selection */}
+              {/* Processing mode */}
               <div>
-                <label className="block text-sm font-bold text-slate-800 mb-2">اختر نوع العملية:</label>
-                <div className="grid grid-cols-2 gap-4">
+                <label className="block text-sm font-bold text-slate-800 mb-2">طريقة الإضافة والمعالجة:</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => setEntryType('مبيعات')}
-                    className={`p-4 rounded-2xl border font-bold text-sm transition flex items-center justify-center gap-2 ${
-                      entryType === 'مبيعات' 
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20' 
+                    onClick={() => setMode('ai')}
+                    className={`p-4 rounded-2xl border text-right transition flex flex-col gap-1.5 ${
+                      mode === 'ai'
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-500/20'
                         : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <span>تسجيل مبيعات</span>
+                    <div className="flex items-center gap-2 font-bold text-sm">
+                      <Sparkles className={`w-4 h-4 ${mode === 'ai' ? 'text-emerald-600' : 'text-slate-500'}`} />
+                      <span>استخراج وتصنيف تلقائي (AI)</span>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      يحلل الذكاء الاصطناعي كل فاتورة تلقائياً لتحديد نوعها (مبيعات أو مشتريات) واستخراج بياناتها دون اختيار مسبق.
+                    </p>
                   </button>
+
                   <button
                     type="button"
-                    onClick={() => setEntryType('مشتريات')}
-                    className={`p-4 rounded-2xl border font-bold text-sm transition flex items-center justify-center gap-2 ${
-                      entryType === 'مشتريات' 
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20' 
+                    onClick={() => setMode('manual')}
+                    className={`p-4 rounded-2xl border text-right transition flex flex-col gap-1.5 ${
+                      mode === 'manual'
+                        ? 'border-slate-800 bg-slate-50 text-slate-950 ring-2 ring-slate-500/20'
                         : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <span>تسجيل مشتريات</span>
+                    <div className="flex items-center gap-2 font-bold text-sm">
+                      <PenLine className="w-4 h-4 text-slate-700" />
+                      <span>إدخال يدوي</span>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      اختر نوع الفاتورة يدوياً (مبيعات أو مشتريات) وأدخل القيم بنفسك في شاشة المراجعة.
+                    </p>
                   </button>
                 </div>
               </div>
+
+              {/* Manual-only type selection */}
+              {mode === 'manual' && (
+                <div>
+                  <label className="block text-sm font-bold text-slate-800 mb-2">نوع الفواتير المضافة يدوياً:</label>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      type="button"
+                      onClick={() => setManualType('مبيعات')}
+                      className={`p-3.5 rounded-2xl border font-bold text-sm transition ${
+                        manualType === 'مبيعات'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      مبيعات
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualType('مشتريات')}
+                      className={`p-3.5 rounded-2xl border font-bold text-sm transition ${
+                        manualType === 'مشتريات'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      مشتريات
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Upload area */}
               <div className="border-2 border-dashed border-slate-300 rounded-2xl p-6 text-center bg-slate-50 hover:bg-slate-100/50 transition cursor-pointer">
@@ -247,7 +368,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     <Upload className="w-6 h-6" />
                   </div>
                   <div>
-                    <span className="font-bold text-slate-800 text-sm">انقر لاختيار صور الفواتير أو اسحبها هنا</span>
+                    <span className="font-bold text-slate-800 text-sm">انقر لاختيار صور أو ملفات الفواتير</span>
                     <p className="text-xs text-slate-500 mt-0.5">JPG, PNG, WEBP, PDF</p>
                   </div>
                 </label>
@@ -257,7 +378,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-bold text-xs text-slate-700">الملفات المختارة ({selectedFiles.length})</span>
-                    <button onClick={() => setSelectedFiles([])} className="text-xs text-red-600 hover:underline">إزالة الكل</button>
+                    <button onClick={() => setSelectedFiles([])} className="text-xs text-red-600 hover:underline">
+                      إزالة الكل
+                    </button>
                   </div>
                   <div className="max-h-36 overflow-y-auto space-y-1.5">
                     {selectedFiles.map((f, idx) => (
@@ -282,19 +405,15 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <button
                   type="button"
                   disabled={selectedFiles.length === 0}
-                  onClick={() => handleStartExtraction(false)}
-                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-sm"
-                >
-                  إدخال يدوي مباشر ({selectedFiles.length})
-                </button>
-                <button
-                  type="button"
-                  disabled={selectedFiles.length === 0}
-                  onClick={() => handleStartExtraction(true)}
+                  onClick={handleStartProcessing}
                   className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
                 >
-                  <Sparkles className="w-4 h-4" />
-                  <span>استخراج بالذكاء الاصطناعي ({selectedFiles.length})</span>
+                  {mode === 'ai' ? <Sparkles className="w-4 h-4" /> : <PenLine className="w-4 h-4" />}
+                  <span>
+                    {mode === 'ai'
+                      ? `بدء الاستخراج والتصنيف (${selectedFiles.length})`
+                      : `إضافة للإدخال اليدوي (${selectedFiles.length})`}
+                  </span>
                 </button>
               </div>
             </>

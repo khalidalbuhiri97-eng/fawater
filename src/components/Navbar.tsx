@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="w-10 h-10 rounded-xl bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
               <FileSpreadsheet className="w-6 h-6" />
             </div>
-            <span>نظام "سوق" للفواتير الذكية</span>
+            <span>نظام Fawater للفواتير الذكية</span>
           </button>
 
           {currentOperation && (

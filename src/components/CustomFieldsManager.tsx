@@ -15,7 +15,7 @@ export const CustomFieldsManager: React.FC<CustomFieldsManagerProps> = ({
   const [type, setType] = useState<FieldType>('نص');
   const [required, setRequired] = useState(false);
   const [aiExtract, setAiExtract] = useState(true);
-  const [excelSheet, setExcelSheet] = useState('الملخص (Summary)');
+  const [excelSheet, setExcelSheet] = useState('المبيعات');
   const [excelColumn, setExcelColumn] = useState('');
   const [optionsStr, setOptionsStr] = useState('');
 
@@ -99,10 +99,9 @@ export const CustomFieldsManager: React.FC<CustomFieldsManagerProps> = ({
               onChange={(e) => setExcelSheet(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white outline-none text-slate-800"
             >
-              <option value="المبيعات (Sales)">المبيعات (Sales)</option>
-              <option value="المشتريات (Purchases)">المشتريات (Purchases)</option>
-              <option value="المصروفات (Expenses)">المصروفات (Expenses)</option>
-              <option value="الملخص (Summary)">الملخص (Summary)</option>
+              <option value="المبيعات">المبيعات</option>
+              <option value="المشتريات والموردين">المشتريات والموردين</option>
+              <option value="ملخص الأداء">ملخص الأداء</option>
             </select>
           </div>
 

@@ -1,8 +1,20 @@
 import React, { useState } from 'react';
-import { Plus, Building2, FileSpreadsheet, Download, Trash2, Edit3, ArrowRight, Sparkles, FolderOpen, Calendar } from 'lucide-react';
+import {
+  Plus,
+  Building2,
+  FileSpreadsheet,
+  Download,
+  Trash2,
+  Edit3,
+  ArrowRight,
+  Sparkles,
+  FolderOpen,
+  Calendar,
+  AlertCircle,
+  CheckCircle2,
+} from 'lucide-react';
 import { Operation } from '../types';
-import { downloadWorkbook } from '../services/excelService';
-import { getWorkbookFromOperation, saveOperation } from '../services/dbService';
+import { downloadOperationExcel } from '../services/excelService';
 
 interface OperationsListProps {
   operations: Operation[];
@@ -22,6 +34,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
   const [editingOp, setEditingOp] = useState<Operation | null>(null);
   const [newName, setNewName] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const handleStartRename = (op: Operation) => {
     setEditingOp(op);
@@ -31,15 +44,30 @@ export const OperationsList: React.FC<OperationsListProps> = ({
   const handleSaveRename = (e: React.FormEvent) => {
     e.preventDefault();
     if (editingOp && newName.trim()) {
-      const updated = { ...editingOp, name: newName.trim(), updatedAt: new Date().toISOString().split('T')[0] };
+      const updated = {
+        ...editingOp,
+        name: newName.trim(),
+        updatedAt: new Date().toISOString().split('T')[0],
+      };
       onUpdateOperation(updated);
       setEditingOp(null);
     }
   };
 
-  const handleDownload = (op: Operation) => {
-    const wb = getWorkbookFromOperation(op);
-    downloadWorkbook(wb, op.excelFileName);
+  const handleDownload = async (op: Operation) => {
+    setExportStatus(null);
+    try {
+      const result = await downloadOperationExcel(op);
+      setExportStatus({
+        type: 'success',
+        text: `تم تصدير "${result.fileName}" بنجاح (${result.exportedCount} فاتورة معتمدة).`,
+      });
+    } catch (err: any) {
+      setExportStatus({
+        type: 'error',
+        text: err?.message || 'تعذر تصدير ملف Excel لهذه المؤسسة.',
+      });
+    }
   };
 
   return (
@@ -56,7 +84,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
             إدارة فواتير ومستندات مؤسستك باحترافية
           </h1>
           <p className="text-slate-300 text-base leading-relaxed mb-6">
-            ارفع صور فواتيرك ومستنداتك واستخرج بياناتها بدقة خارقة باستخدام Gemini Vision AI، راجعها واحفظها مباشرة داخل ملف Excel خاص بكل عملية ومؤسسة دون الحاجة لقواعد بيانات معقدة.
+            ارفع صور فواتيرك واستخرج بياناتها تلقائياً بالذكاء الاصطناعي مع تصنيفها إلى مبيعات ومشتريات ومراجعتها قبل تصديرها داخل قالب Excel الرسمي الموحد.
           </p>
           <button
             onClick={onOpenNewModal}
@@ -68,11 +96,28 @@ export const OperationsList: React.FC<OperationsListProps> = ({
         </div>
       </div>
 
+      {exportStatus && (
+        <div
+          className={`mb-6 p-4 rounded-2xl border text-xs font-medium flex items-center gap-2 ${
+            exportStatus.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-red-50 border-red-200 text-red-900'
+          }`}
+        >
+          {exportStatus.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          )}
+          <span>{exportStatus.text}</span>
+        </div>
+      )}
+
       {/* Operations Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-bold text-slate-900">العمليات والمشروعات الحالية</h2>
-          <p className="text-sm text-slate-500">كل عملية تمثل مشروعاً مستقلًا مع ملف Excel الخاص به</p>
+          <p className="text-sm text-slate-500">كل مؤسسة مرتبطة تلقائياً بقالب Fawater الرسمي</p>
         </div>
         <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full font-bold text-sm">
           {operations.length} عمليات
@@ -97,11 +142,11 @@ export const OperationsList: React.FC<OperationsListProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {operations.map((op) => {
-            const completedCount = op.invoices?.filter(i => i.status === 'مكتملة').length || 0;
+            const completedCount = op.invoices?.filter((i) => i.status === 'مكتملة').length || 0;
             const totalCount = op.invoices?.length || 0;
 
             return (
-              <div 
+              <div
                 key={op.id}
                 className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-lg transition flex flex-col justify-between overflow-hidden group"
               >
@@ -147,7 +192,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
                       <span className="truncate max-w-[150px]">{op.excelFileName}</span>
                     </div>
                     <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full font-bold">
-                      {completedCount} / {totalCount} فواتير
+                      {completedCount} / {totalCount} معتمدة
                     </span>
                   </div>
                 </div>
@@ -219,7 +264,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
             </div>
             <h3 className="text-lg font-bold text-slate-900 mb-2">تأكيد حذف العملية</h3>
             <p className="text-sm text-slate-500 mb-6">
-              هل أنت متأكد من حذف هذه العملية؟ سيتم إزالة كافة السجلات المرتبطة بها محلياً دون المساس بالملفات الأخرى.
+              هل أنت متأكد من حذف هذه العملية؟ سيتم إزالة كافة السجلات والصور المرتبطة بها محلياً.
             </p>
             <div className="flex items-center justify-center gap-3">
               <button

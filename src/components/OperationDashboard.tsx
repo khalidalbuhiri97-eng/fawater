@@ -1,7 +1,16 @@
 import React, { useState } from 'react';
-import { 
-  Building2, Upload, FileSpreadsheet, Plus, Settings, DollarSign, 
-  TrendingUp, TrendingDown, CheckCircle2, Clock, AlertCircle, Sparkles, LayoutDashboard, ListFilter, Tag, ArrowLeft, ArrowRight, Check
+import {
+  Upload,
+  FileSpreadsheet,
+  DollarSign,
+  TrendingUp,
+  TrendingDown,
+  CheckCircle2,
+  Clock,
+  Sparkles,
+  LayoutDashboard,
+  ListFilter,
+  Tag,
 } from 'lucide-react';
 import { Operation } from '../types';
 import { InvoicesTable } from './InvoicesTable';
@@ -24,22 +33,30 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
   const invoices = operation.invoices || [];
-  const completedInvoices = invoices.filter(i => i.status === 'مكتملة');
-  const pendingInvoices = invoices.filter(i => i.status === 'تحتاج مراجعة' || i.status === 'قيد المعالجة');
+  const completedInvoices = invoices.filter((i) => i.status === 'مكتملة');
+  const pendingInvoices = invoices.filter((i) => i.status !== 'مكتملة');
 
   const totalSales = completedInvoices
-    .filter(i => i.documentType === 'مبيعات' || i.documentType === 'فاتورة ضريبية')
-    .reduce((sum, i) => sum + Number(i.grandTotal || 0), 0);
+    .filter((i) => i.documentType === 'مبيعات')
+    .reduce((sum, i) => {
+      const val =
+        i.cashSales !== undefined || i.networkSales !== undefined
+          ? Number(i.cashSales ?? 0) + Number(i.networkSales ?? 0)
+          : Number(i.grandTotal ?? 0);
+      return sum + val;
+    }, 0);
 
   const totalPurchases = completedInvoices
-    .filter(i => i.documentType === 'مشتريات' || i.documentType === 'مرتجعات')
-    .reduce((sum, i) => sum + Number(i.grandTotal || 0), 0);
+    .filter((i) => i.documentType === 'مشتريات')
+    .reduce((sum, i) => {
+      const val =
+        i.subtotal !== undefined || i.taxAmount !== undefined
+          ? Number(i.subtotal ?? 0) + Number(i.taxAmount ?? 0)
+          : Number(i.grandTotal ?? 0);
+      return sum + val;
+    }, 0);
 
-  const totalExpenses = completedInvoices
-    .filter(i => i.documentType === 'مصروفات')
-    .reduce((sum, i) => sum + Number(i.grandTotal || 0), 0);
-
-  const netIncome = totalSales - (totalPurchases + totalExpenses);
+  const netIncome = totalSales - totalPurchases;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -57,7 +74,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight mb-2">{operation.name}</h1>
           <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
-            منصة إدارة واستخراج بيانات الفواتير والمستندات عبر ملفات Excel والذكاء الاصطناعي.
+            منصة تحويل صور الفواتير ومستندات المؤسسة إلى ملف Excel رسمي موحد باستخدام الذكاء الاصطناعي.
           </p>
         </div>
 
@@ -82,27 +99,27 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100 flex flex-col items-center gap-1.5">
             <div className="w-7 h-7 bg-emerald-600 text-white rounded-full flex items-center justify-center font-bold text-xs">1</div>
             <span className="font-bold text-xs text-slate-800">رفع الفواتير</span>
-            <span className="text-[11px] text-slate-500">رفع صور أو مستندات الفواتير</span>
+            <span className="text-[11px] text-slate-500">رفع صور أو ملفات PDF</span>
           </div>
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
             <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">2</div>
-            <span className="font-bold text-xs text-slate-800">الاستخراج الذكي</span>
-            <span className="text-[11px] text-slate-500">تحليل البيانات بـ Gemini AI</span>
+            <span className="font-bold text-xs text-slate-800">التصنيف والاستخراج</span>
+            <span className="text-[11px] text-slate-500">تصنيف مبيعات/مشتريات بالـ AI</span>
           </div>
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
             <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">3</div>
-            <span className="font-bold text-xs text-slate-800">المراجعة والتدقيق</span>
-            <span className="text-[11px] text-slate-500">مراجعة الصورة والحقول وتعديلها</span>
+            <span className="font-bold text-xs text-slate-800">المراجعة والاعتماد</span>
+            <span className="text-[11px] text-slate-500">تدقيق الصورة والتاريخ والحقول</span>
           </div>
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
             <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">4</div>
-            <span className="font-bold text-xs text-slate-800">الحفظ في Excel</span>
-            <span className="text-[11px] text-slate-500">تحديث سجلات ملف الـ Excel</span>
+            <span className="font-bold text-xs text-slate-800">الإدراج في القالب</span>
+            <span className="text-[11px] text-slate-500">تعبئة أوراق القالب الرسمي</span>
           </div>
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
             <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">5</div>
             <span className="font-bold text-xs text-slate-800">تنزيل الملف</span>
-            <span className="text-[11px] text-slate-500">تحميل ملف Excel جاهز للاستخدام</span>
+            <span className="text-[11px] text-slate-500">تحميل ملف XLSX جاهز بالتنسيقات</span>
           </div>
         </div>
       </div>
@@ -162,8 +179,10 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-slate-500 mb-1">إجمالي المبيعات المحفوظة</p>
-                <h3 className="text-2xl font-extrabold text-slate-900">{totalSales.toLocaleString()} <span className="text-xs font-normal text-slate-500">SAR</span></h3>
+                <p className="text-xs font-semibold text-slate-500 mb-1">إجمالي المبيعات المعتمدة</p>
+                <h3 className="text-2xl font-extrabold text-slate-900">
+                  {totalSales.toLocaleString()} <span className="text-xs font-normal text-slate-500">SAR</span>
+                </h3>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
                 <TrendingUp className="w-6 h-6" />
@@ -172,8 +191,10 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
 
             <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-slate-500 mb-1">إجمالي المشتريات والمصروفات</p>
-                <h3 className="text-2xl font-extrabold text-slate-900">{(totalPurchases + totalExpenses).toLocaleString()} <span className="text-xs font-normal text-slate-500">SAR</span></h3>
+                <p className="text-xs font-semibold text-slate-500 mb-1">إجمالي المشتريات المعتمدة</p>
+                <h3 className="text-2xl font-extrabold text-slate-900">
+                  {totalPurchases.toLocaleString()} <span className="text-xs font-normal text-slate-500">SAR</span>
+                </h3>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600">
                 <TrendingDown className="w-6 h-6" />
@@ -182,7 +203,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
 
             <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-slate-500 mb-1">صافي الإيرادات والأرباح</p>
+                <p className="text-xs font-semibold text-slate-500 mb-1">صافي التدفق (المبيعات - المشتريات)</p>
                 <h3 className={`text-2xl font-extrabold ${netIncome >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
                   {netIncome.toLocaleString()} <span className="text-xs font-normal text-slate-500">SAR</span>
                 </h3>
@@ -194,9 +215,10 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
 
             <div className="bg-white rounded-3xl p-6 border border-slate-200 shadow-xs flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-slate-500 mb-1">الفواتير المكتملة / قيد المراجعة</p>
+                <p className="text-xs font-semibold text-slate-500 mb-1">الفواتير المعتمدة / قيد المراجعة</p>
                 <h3 className="text-2xl font-extrabold text-slate-900">
-                  {completedInvoices.length} <span className="text-xs text-slate-400 font-normal">({pendingInvoices.length} مراجعة)</span>
+                  {completedInvoices.length}{' '}
+                  <span className="text-xs text-slate-400 font-normal">({pendingInvoices.length} للمراجعة)</span>
                 </h3>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
@@ -213,8 +235,12 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
                   <Clock className="w-6 h-6" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-amber-900 text-base">لديك {pendingInvoices.length} فواتير تحتاج إلى المراجعة والحفظ</h4>
-                  <p className="text-xs text-amber-700">قم بمراجعة البيانات المستخرجة بالذكاء الاصطناعي واعتمدها لتحديث ملف Excel</p>
+                  <h4 className="font-bold text-amber-900 text-base">
+                    لديك {pendingInvoices.length} فواتير تحتاج إلى المراجعة والاعتماد
+                  </h4>
+                  <p className="text-xs text-amber-700">
+                    راجع البيانات المستخرجة وأكد نوع الفاتورة وتاريخها لاعتمادها وتجهيزها للتصدير
+                  </p>
                 </div>
               </div>
               <button
@@ -244,7 +270,9 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
                   <FileSpreadsheet className="w-8 h-8" />
                 </div>
                 <h4 className="font-bold text-slate-800 text-base">لا توجد فواتير مرفوعة بعد</h4>
-                <p className="text-slate-500 text-xs max-w-sm mx-auto">ارفع صور فواتيرك ومستنداتك واستخرج بياناتها بدقة خارقة باستخدام Gemini Vision.</p>
+                <p className="text-slate-500 text-xs max-w-sm mx-auto">
+                  ارفع صور فواتيرك ومستنداتك واستخرج بياناتها وتصنيفها تلقائياً باستخدام Gemini Vision.
+                </p>
                 <button
                   onClick={() => setIsUploadModalOpen(true)}
                   className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold hover:bg-emerald-500 transition shadow-md"
@@ -272,15 +300,10 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
       )}
 
       {activeTab === 'custom_fields' && (
-        <CustomFieldsManager
-          operation={operation}
-          onUpdateOperation={onUpdateOperation}
-        />
+        <CustomFieldsManager operation={operation} onUpdateOperation={onUpdateOperation} />
       )}
 
-      {activeTab === 'export' && (
-        <ExportCenter operation={operation} />
-      )}
+      {activeTab === 'export' && <ExportCenter operation={operation} />}
 
       <BatchUploadModal
         isOpen={isUploadModalOpen}

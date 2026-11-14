@@ -1,275 +1,411 @@
-import * as XLSX from 'xlsx';
-import { InvoiceRecord, CustomField } from '../types';
+import ExcelJS from 'exceljs';
+import { ExportTrackingEntry, InvoiceRecord, Operation } from '../types';
+import {
+  getOfficialTemplate,
+  TemplateColumnInfo,
+  TemplateSheetInfo,
+  validateAndInspectTemplateBuffer,
+} from './templateService';
+import { recordExportBatch } from './dbService';
 
-export interface SheetStructure {
-  sheetName: string;
-  headerRowIndex: number;
-  columns: string[];
-  dataStartRowIndex: number;
+export interface ExportExecutionResult {
+  buffer: Uint8Array;
+  fileName: string;
+  templateSha256: string;
+  exportedCount: number;
+  skippedDuplicates: number;
+  skippedUnready: number;
+  salesWritten: number;
+  purchasesWritten: number;
+  entries: ExportTrackingEntry[];
 }
 
-export interface TemplateAnalysisResult {
-  filename: string;
-  sha256Fingerprint: string;
-  sheets: SheetStructure[];
-  workbook: XLSX.WorkBook;
-}
-
-/**
- * Computes SHA-256 hash fingerprint of ArrayBuffer
- */
-export async function computeSha256(buffer: ArrayBuffer): Promise<string> {
-  try {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    return hashHex;
-  } catch (e) {
-    return 'sha256-unavailable';
-  }
-}
-
-const TEMPLATE_STORAGE_KEY = 'fawater_template_cache_v2';
-
-/**
- * Loads the official fawater_template.xlsx from assets, inspects its structure dynamically,
- * computes SHA-256 fingerprint, and logs details to the console.
- */
-export async function loadAndAnalyzeOfficialTemplate(): Promise<TemplateAnalysisResult> {
-  let arrayBuf: ArrayBuffer;
-
-  try {
-    const res = await fetch('/assets/templates/fawater_template.xlsx');
-    if (!res.ok) {
-      throw new Error('فشل تحميل القالب الرسمي من assets/templates/fawater_template.xlsx');
+function getCellText(cell: ExcelJS.Cell): string {
+  const v = cell.value;
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    if ('richText' in v && Array.isArray(v.richText)) {
+      return v.richText.map((r) => r.text).join('').trim();
     }
-    arrayBuf = await res.arrayBuffer();
-  } catch (err) {
-    console.warn('Fallback: fetching from root /assets/templates/fawater_template.xlsx');
-    const res = await fetch('/assets/templates/fawater_template.xlsx');
-    arrayBuf = await res.arrayBuffer();
+    if ('text' in v) return String((v as any).text || '').trim();
+    if ('result' in v) return String((v as any).result ?? '').trim();
+    if ('formula' in v) return '';
+    return '';
   }
+  return String(v).trim();
+}
 
-  const sha256Fingerprint = await computeSha256(arrayBuf);
-  const workbook = XLSX.read(arrayBuf, { type: 'array', cellDates: true, cellStyles: true });
-
-  const sheets: SheetStructure[] = [];
-
-  for (const sheetName of workbook.SheetNames) {
-    const ws = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
-    
-    let headerRowIndex = 0;
-    let columns: string[] = [];
-
-    // Find the first row that has multiple column headers or looks like a header row
-    for (let r = 0; r < Math.min(rows.length, 10); r++) {
-      const row = rows[r] as any[];
-      if (row && row.filter(Boolean).length >= 2) {
-        headerRowIndex = r;
-        columns = row.map((c, idx) => String(c || `عمود ${idx + 1}`));
-        break;
+function isRowEmpty(row: ExcelJS.Row, colCount: number): boolean {
+  for (let c = 1; c <= colCount; c++) {
+    const cell = row.getCell(c);
+    const v = cell.value;
+    if (v !== null && v !== undefined && v !== '') {
+      if (typeof v === 'object' && 'formula' in v) {
+        // Formula cell alone without key inputs doesn't mean occupied, unless another col has value
+        continue;
       }
+      return false;
     }
+  }
+  return true;
+}
 
-    const dataStartRowIndex = headerRowIndex + 1;
+function findNextWritableRow(
+  ws: ExcelJS.Worksheet,
+  sheetInfo: TemplateSheetInfo
+): number {
+  const start = sheetInfo.dataStartRowNumber;
+  const limit = sheetInfo.totalsRowNumber
+    ? sheetInfo.totalsRowNumber - 1
+    : Math.max(ws.rowCount, start);
+  const colCount = Math.max(sheetInfo.columns.length, 6);
 
-    sheets.push({
-      sheetName,
-      headerRowIndex,
-      columns,
-      dataStartRowIndex
-    });
+  let lastOccupied = start - 1;
+  for (let r = start; r <= limit; r++) {
+    const row = ws.getRow(r);
+    if (!isRowEmpty(row, colCount)) {
+      lastOccupied = r;
+    }
+  }
+  return lastOccupied + 1;
+}
+
+function parseExcelDateValue(dateStr: string): Date | string | null {
+  const trimmed = (dateStr || '').trim();
+  if (!trimmed) return null;
+  const isoMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
+  if (isoMatch) {
+    const y = Number(isoMatch[1]);
+    const m = Number(isoMatch[2]) - 1;
+    const d = Number(isoMatch[3]);
+    return new Date(Date.UTC(y, m, d));
+  }
+  return trimmed;
+}
+
+function copyRowStyle(sourceRow: ExcelJS.Row, targetRow: ExcelJS.Row, colCount: number) {
+  if (sourceRow.height) {
+    targetRow.height = sourceRow.height;
+  }
+  for (let c = 1; c <= colCount; c++) {
+    const srcCell = sourceRow.getCell(c);
+    const dstCell = targetRow.getCell(c);
+    dstCell.style = { ...srcCell.style };
+  }
+}
+
+function ensureWritableRowBeforeTotals(
+  ws: ExcelJS.Worksheet,
+  targetRowNumber: number,
+  sheetInfo: TemplateSheetInfo,
+  workbook: ExcelJS.Workbook
+): number {
+  if (!sheetInfo.totalsRowNumber || targetRowNumber < sheetInfo.totalsRowNumber) {
+    return sheetInfo.totalsRowNumber || targetRowNumber;
   }
 
-  console.log('=== FAWATER OFFICIAL TEMPLATE ANALYSIS ===');
-  console.log('Template Path: assets/templates/fawater_template.xlsx');
-  console.log('SHA-256 Fingerprint:', sha256Fingerprint);
-  console.log('Detected Sheets & Structure:', sheets);
-  console.log('==========================================');
+  // Insert one empty row right at totalsRowNumber, shifting الإجمالي down by 1
+  const oldTotalsRow = sheetInfo.totalsRowNumber;
+  ws.spliceRows(oldTotalsRow, 0, []);
+  const newTotalsRow = oldTotalsRow + 1;
+  sheetInfo.totalsRowNumber = newTotalsRow;
 
+  const colCount = sheetInfo.columns.length;
+  const templateDataRow = ws.getRow(oldTotalsRow - 1);
+  const newlyInsertedRow = ws.getRow(oldTotalsRow);
+  copyRowStyle(templateDataRow, newlyInsertedRow, colCount);
+
+  // Rewrite totals formulas explicitly so shared formulas never break on shifted rows
+  const totalsRow = ws.getRow(newTotalsRow);
+  const startRow = sheetInfo.dataStartRowNumber;
+  const endRow = newTotalsRow - 1;
+
+  if (ws.name === 'المبيعات') {
+    for (const colLetter of ['C', 'D', 'E']) {
+      totalsRow.getCell(colLetter).value = {
+        formula: `SUM(${colLetter}${startRow}:${colLetter}${endRow})`,
+      };
+    }
+    for (const colLetter of ['F', 'G', 'H']) {
+      totalsRow.getCell(colLetter).value = {
+        formula: `IFERROR(LOOKUP(2,1/(${colLetter}${startRow}:${colLetter}${endRow}<>""),${colLetter}${startRow}:${colLetter}${endRow}),0)`,
+      };
+    }
+  } else if (ws.name === 'المشتريات والموردين') {
+    for (const colLetter of ['C', 'D', 'E']) {
+      totalsRow.getCell(colLetter).value = {
+        formula: `SUM(${colLetter}${startRow}:${colLetter}${endRow})`,
+      };
+    }
+    totalsRow.getCell('F').value = {
+      formula: `IFERROR(LOOKUP(2,1/(F${startRow}:F${endRow}<>""),F${startRow}:F${endRow}),0)`,
+    };
+  }
+
+  // Update ملخص الأداء references if totals row shifted beyond row 35
+  const summaryWs = workbook.getWorksheet('ملخص الأداء');
+  if (summaryWs) {
+    if (ws.name === 'المبيعات') {
+      summaryWs.getCell('B6').value = { formula: `'المبيعات'!E${newTotalsRow}` };
+      summaryWs.getCell('B9').value = {
+        formula: `LOOKUP(2,1/('المبيعات'!F${startRow}:F${endRow}<>""),'المبيعات'!F${startRow}:F${endRow})`,
+      };
+      summaryWs.getCell('D9').value = {
+        formula: `LOOKUP(2,1/('المبيعات'!G${startRow}:G${endRow}<>""),'المبيعات'!G${startRow}:G${endRow})`,
+      };
+      summaryWs.getCell('F9').value = {
+        formula: `LOOKUP(2,1/('المبيعات'!H${startRow}:H${endRow}<>""),'المبيعات'!H${startRow}:H${endRow})`,
+      };
+    } else if (ws.name === 'المشتريات والموردين') {
+      summaryWs.getCell('D6').value = { formula: `'المشتريات والموردين'!E${newTotalsRow}` };
+    }
+  }
+
+  return newTotalsRow;
+}
+
+function findColumnByKeywords(
+  columns: TemplateColumnInfo[],
+  keywords: string[],
+  excludeKeywords: string[] = []
+): TemplateColumnInfo | undefined {
+  for (const kw of keywords) {
+    const match = columns.find(
+      (col) => col.name.includes(kw) && !excludeKeywords.some((ex) => col.name.includes(ex))
+    );
+    if (match) return match;
+  }
+  return undefined;
+}
+
+/**
+ * Appends approved invoices into an existing template/workbook buffer using ExcelJS,
+ * preserving all formatting, colors, fonts, borders, merges, widths, heights, and formulas,
+ * and preventing duplicate exports by unique invoice ID.
+ */
+export async function appendInvoicesToWorkbookBuffer(
+  workbookBuffer: ArrayBuffer,
+  invoices: InvoiceRecord[],
+  operationId: string,
+  alreadyExportedIds: Set<string> = new Set()
+): Promise<Omit<ExportExecutionResult, 'fileName' | 'templateSha256'>> {
+  const { workbook, sheets } = await validateAndInspectTemplateBuffer(workbookBuffer);
+  workbook.calcProperties.fullCalcOnLoad = true;
+
+  const salesSheetInfo = sheets.find((s) => s.sheetName === 'المبيعات');
+  const purchasesSheetInfo = sheets.find((s) => s.sheetName === 'المشتريات والموردين');
+  if (!salesSheetInfo || !purchasesSheetInfo) {
+    throw new Error('تعذر تحديد أوراق المبيعات والمشتريات في قالب Excel.');
+  }
+
+  const salesWs = workbook.getWorksheet(salesSheetInfo.sheetName)!;
+  const purchasesWs = workbook.getWorksheet(purchasesSheetInfo.sheetName)!;
+
+  let nextSalesRow = findNextWritableRow(salesWs, salesSheetInfo);
+  let nextPurchasesRow = findNextWritableRow(purchasesWs, purchasesSheetInfo);
+
+  // Dynamic column mapping from inspected template headers
+  const salesDateCol = findColumnByKeywords(salesSheetInfo.columns, ['التاريخ']);
+  const salesDayCol = findColumnByKeywords(salesSheetInfo.columns, ['اليوم']);
+  const salesCashCol = findColumnByKeywords(salesSheetInfo.columns, ['المبيعات النقدية', 'النقدية', 'الكاش'], ['رصيد']);
+  const salesNetworkCol = findColumnByKeywords(salesSheetInfo.columns, ['الشبكة'], ['رصيد']);
+  const salesTotalCol = findColumnByKeywords(salesSheetInfo.columns, ['إجمالي المبيعات', 'الإجمالي']);
+  const salesCashBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الكاش']);
+  const salesBoxBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الصندوق']);
+  const salesNetBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الشبكة']);
+
+  const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['التاريخ']);
+  const purSupplierCol = findColumnByKeywords(purchasesSheetInfo.columns, ['اسم المورد', 'المورد']);
+  const purSubtotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['المبلغ قبل الضريبة', 'قبل الضريبة']);
+  const purTaxCol = findColumnByKeywords(
+    purchasesSheetInfo.columns,
+    ['ضريبة القيمة المضافة', 'الضريبة'],
+    ['قبل الضريبة', 'شامل الضريبة']
+  );
+  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الإجمالي شامل الضريبة', 'الإجمالي']);
+  const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
+
+  const seenIds = new Set<string>(alreadyExportedIds);
+  const entries: ExportTrackingEntry[] = [];
+  let salesWritten = 0;
+  let purchasesWritten = 0;
+  let skippedDuplicates = 0;
+  let skippedUnready = 0;
+
+  for (const inv of invoices) {
+    if (inv.status !== 'مكتملة') {
+      skippedUnready++;
+      continue;
+    }
+
+    if (inv.documentType !== 'مبيعات' && inv.documentType !== 'مشتريات') {
+      skippedUnready++;
+      continue;
+    }
+
+    if (!inv.invoiceDate || !inv.invoiceDate.trim()) {
+      skippedUnready++;
+      continue;
+    }
+
+    if (seenIds.has(inv.id)) {
+      skippedDuplicates++;
+      continue;
+    }
+
+    if (inv.documentType === 'مبيعات') {
+      ensureWritableRowBeforeTotals(salesWs, nextSalesRow, salesSheetInfo, workbook);
+      const row = salesWs.getRow(nextSalesRow);
+
+      if (salesDateCol) {
+        row.getCell(salesDateCol.colNumber).value = parseExcelDateValue(inv.invoiceDate);
+      }
+      if (salesDayCol && inv.day) {
+        row.getCell(salesDayCol.colNumber).value = inv.day;
+      }
+      if (salesCashCol && inv.cashSales !== undefined) {
+        row.getCell(salesCashCol.colNumber).value = inv.cashSales;
+      }
+      if (salesNetworkCol && inv.networkSales !== undefined) {
+        row.getCell(salesNetworkCol.colNumber).value = inv.networkSales;
+      }
+      if (salesTotalCol) {
+        if (inv.cashSales !== undefined || inv.networkSales !== undefined) {
+          const cCol = salesCashCol?.colLetter || 'C';
+          const dCol = salesNetworkCol?.colLetter || 'D';
+          const calcResult = Number(inv.cashSales ?? 0) + Number(inv.networkSales ?? 0);
+          row.getCell(salesTotalCol.colNumber).value = {
+            formula: `${cCol}${nextSalesRow}+${dCol}${nextSalesRow}`,
+            result: calcResult,
+          };
+        } else if (inv.grandTotal !== undefined) {
+          row.getCell(salesTotalCol.colNumber).value = inv.grandTotal;
+        }
+      }
+      if (salesCashBalCol && inv.cashBalance !== undefined) {
+        row.getCell(salesCashBalCol.colNumber).value = inv.cashBalance;
+      }
+      if (salesBoxBalCol && inv.cashBoxBalance !== undefined) {
+        row.getCell(salesBoxBalCol.colNumber).value = inv.cashBoxBalance;
+      }
+      if (salesNetBalCol && inv.networkBalance !== undefined) {
+        row.getCell(salesNetBalCol.colNumber).value = inv.networkBalance;
+      }
+
+      seenIds.add(inv.id);
+      entries.push({
+        invoiceId: inv.id,
+        operationId,
+        sheetName: salesSheetInfo.sheetName,
+        rowNumber: nextSalesRow,
+        exportedAt: new Date().toISOString(),
+      });
+      nextSalesRow++;
+      salesWritten++;
+    } else if (inv.documentType === 'مشتريات') {
+      ensureWritableRowBeforeTotals(purchasesWs, nextPurchasesRow, purchasesSheetInfo, workbook);
+      const row = purchasesWs.getRow(nextPurchasesRow);
+
+      if (purDateCol) {
+        row.getCell(purDateCol.colNumber).value = parseExcelDateValue(inv.invoiceDate);
+      }
+      if (purSupplierCol && inv.issuerName) {
+        row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
+      }
+      if (purSubtotalCol && inv.subtotal !== undefined) {
+        row.getCell(purSubtotalCol.colNumber).value = inv.subtotal;
+      }
+      if (purTaxCol && inv.taxAmount !== undefined) {
+        row.getCell(purTaxCol.colNumber).value = inv.taxAmount;
+      }
+      if (purTotalCol) {
+        if (inv.subtotal !== undefined || inv.taxAmount !== undefined) {
+          const cCol = purSubtotalCol?.colLetter || 'C';
+          const dCol = purTaxCol?.colLetter || 'D';
+          const calcResult = Number(inv.subtotal ?? 0) + Number(inv.taxAmount ?? 0);
+          row.getCell(purTotalCol.colNumber).value = {
+            formula: `${cCol}${nextPurchasesRow}+${dCol}${nextPurchasesRow}`,
+            result: calcResult,
+          };
+        } else if (inv.grandTotal !== undefined) {
+          row.getCell(purTotalCol.colNumber).value = inv.grandTotal;
+        }
+      }
+      if (purBalCol && inv.balance !== undefined) {
+        row.getCell(purBalCol.colNumber).value = inv.balance;
+      }
+
+      seenIds.add(inv.id);
+      entries.push({
+        invoiceId: inv.id,
+        operationId,
+        sheetName: purchasesSheetInfo.sheetName,
+        rowNumber: nextPurchasesRow,
+        exportedAt: new Date().toISOString(),
+      });
+      nextPurchasesRow++;
+      purchasesWritten++;
+    }
+  }
+
+  const outArrayBuffer = await workbook.xlsx.writeBuffer();
   return {
-    filename: 'fawater_template.xlsx',
-    sha256Fingerprint,
-    sheets,
-    workbook
+    buffer: new Uint8Array(outArrayBuffer as ArrayBuffer),
+    exportedCount: entries.length,
+    skippedDuplicates,
+    skippedUnready,
+    salesWritten,
+    purchasesWritten,
+    entries,
   };
 }
 
 /**
- * Centralized export function that loads the official template, inspects its structure dynamically,
- * and appends approved invoices into the correct sheets while preserving formatting and formulas.
+ * Single centralized export pipeline for an operation.
+ * Always loads the verified official template (from IndexedDB or public/assets/templates/fawater_template.xlsx).
  */
-export async function generateExportWorkbook(
-  invoices: InvoiceRecord[],
-  operationName: string,
-  activityType: string
-): Promise<Uint8Array> {
-  const analysis = await loadAndAnalyzeOfficialTemplate();
-  const { workbook, sheets } = analysis;
-
-  // Clear old cached template variants if any
-  localStorage.removeItem('fawater_custom_template_base64');
-
-  let totalSales = 0;
-  let totalPurchases = 0;
-  let totalTax = 0;
-
-  for (const sheetStruct of sheets) {
-    const ws = workbook.Sheets[sheetStruct.sheetName];
-    if (!ws) continue;
-
-    const isSalesSheet = sheetStruct.sheetName.includes('مبيعات') || sheetStruct.sheetName.includes('Sales');
-    const isPurchasesSheet = sheetStruct.sheetName.includes('مشتريات') || sheetStruct.sheetName.includes('Purchases') || sheetStruct.sheetName.includes('موردين');
-
-    if (!isSalesSheet && !isPurchasesSheet) continue;
-
-    // Get existing IDs to prevent duplicates
-    const existingIds = new Set<string>();
-    const jsonRows = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
-    for (let r = sheetStruct.dataStartRowIndex; r < jsonRows.length; r++) {
-      const row = jsonRows[r] as any[];
-      if (row && row[0]) existingIds.add(String(row[0]));
-      if (row && row[1]) existingIds.add(String(row[1]));
-    }
-
-    const nextRow = Math.max(jsonRows.length, sheetStruct.dataStartRowIndex + 1);
-    let currentRowNum = nextRow;
-    const newRows: any[][] = [];
-
-    for (const inv of invoices) {
-      if (inv.status !== 'مكتملة') continue;
-
-      const docType = inv.documentType || 'مبيعات';
-      const isThisSales = docType === 'مبيعات' || docType === 'فاتورة ضريبية';
-
-      if (isSalesSheet && isThisSales) {
-        if (!existingIds.has(inv.id) && !existingIds.has(inv.invoiceNumber || '')) {
-          const formulaColIndex = sheetStruct.columns.findIndex(c => c.includes('إجمالي') || c.includes('Total'));
-          const formulaRef = formulaColIndex !== -1 ? XLSX.utils.encode_cell({ r: currentRowNum - 1, c: formulaColIndex }) : null;
-          
-          // Map to columns dynamically
-          const rowData = sheetStruct.columns.map((colName, colIdx) => {
-            if (colName.includes('التاريخ') || colName.includes('Date')) return inv.invoiceDate || null;
-            if (colName.includes('اليوم') || colName.includes('Day')) return inv.day || null;
-            if (colName.includes('كاش') || colName.includes('Cash')) return inv.cashSales !== undefined ? inv.cashSales : null;
-            if (colName.includes('شبكة') || colName.includes('POS') || colName.includes('بنك')) return inv.networkSales !== undefined ? inv.networkSales : null;
-            if (colName.includes('إجمالي') || colName.includes('Total')) {
-              // Formula C+D or similar
-              return { t: 'n', f: `=C${currentRowNum}+D${currentRowNum}` };
-            }
-            if (colName.includes('رصيد الكاش')) return inv.cashBalance !== undefined ? inv.cashBalance : null;
-            if (colName.includes('رصيد الصندوق')) return inv.cashBoxBalance !== undefined ? inv.cashBoxBalance : null;
-            if (colName.includes('رصيد الشبكة')) return inv.networkBalance !== undefined ? inv.networkBalance : null;
-            return null;
-          });
-
-          newRows.push(rowData);
-          existingIds.add(inv.id);
-          currentRowNum++;
-        }
-        totalSales += Number(inv.grandTotal || (inv.cashSales || 0) + (inv.networkSales || 0));
-      } else if (isPurchasesSheet && !isThisSales) {
-        if (!existingIds.has(inv.id) && !existingIds.has(inv.invoiceNumber || '')) {
-          const rowData = sheetStruct.columns.map((colName) => {
-            if (colName.includes('التاريخ') || colName.includes('Date')) return inv.invoiceDate || null;
-            if (colName.includes('المورد') || colName.includes('Supplier') || colName.includes('اسم')) return inv.issuerName || null;
-            if (colName.includes('قبل الضريبة') || colName.includes('Subtotal')) return inv.subtotal !== undefined ? inv.subtotal : null;
-            if (colName.includes('ضريبة') || colName.includes('VAT')) return inv.taxAmount !== undefined ? inv.taxAmount : null;
-            if (colName.includes('الإجمالي') || colName.includes('Grand') || colName.includes('شامل')) {
-              return { t: 'n', f: `=C${currentRowNum}+D${currentRowNum}` };
-            }
-            if (colName.includes('رصيد') || colName.includes('Balance')) return inv.balance !== undefined ? inv.balance : null;
-            return null;
-          });
-
-          newRows.push(rowData);
-          existingIds.add(inv.id);
-          currentRowNum++;
-        }
-        totalPurchases += Number(inv.grandTotal || (inv.subtotal || 0) + (inv.taxAmount || 0));
-      }
-
-      totalTax += Number(inv.taxAmount || 0);
-    }
-
-    if (newRows.length > 0) {
-      XLSX.utils.sheet_add_aoa(ws, newRows, { origin: -1 });
-    }
+export async function exportOperationToExcel(operation: Operation): Promise<ExportExecutionResult> {
+  const template = await getOfficialTemplate();
+  const approvedInvoices = (operation.invoices || []).filter((inv) => inv.status === 'مكتملة');
+  if (approvedInvoices.length === 0) {
+    throw new Error('لا توجد فواتير معتمدة (مكتملة) جاهزة للتصدير. يرجى مراجعة الفواتير واعتمادها أولاً.');
   }
 
-  // Update Summary Sheet if exists
-  const summarySheetName = workbook.SheetNames.find(s => s.includes('ملخص') || s.includes('Summary'));
-  if (summarySheetName) {
-    const wsSummary = workbook.Sheets[summarySheetName];
-    const netIncome = totalSales - totalPurchases;
-    XLSX.utils.sheet_add_aoa(wsSummary, [
-      ['', `نظام إدارة الحسابات - ${operationName}`],
-      ['', 'ملخص المبيعات اليومية، المشتريات، والأرصدة المالية'],
-      ['', ''],
-      ['', 'إجمالي المبيعات', '', 'إجمالي المشتريات (شامل الضريبة)', '', 'صافي التدفق (المبيعات - المشتريات)'],
-      ['', totalSales, '', totalPurchases, '', netIncome],
-      ['', ''],
-      ['', 'آخر رصيد كاش', '', 'آخر رصيد صندوق', '', 'آخر رصيد شبكة (بنك)'],
-      ['', '#N/A', '', '#N/A', '', '#N/A']
-    ], { origin: 'A1' });
+  const result = await appendInvoicesToWorkbookBuffer(
+    template.buffer,
+    operation.invoices || [],
+    operation.id,
+    new Set()
+  );
+
+  if (result.exportedCount === 0) {
+    throw new Error('لم يتم تصدير أي فاتورة: تأكد من تحديد نوع كل فاتورة (مبيعات أو مشتريات) وإدخال التاريخ ثم اعتمادها.');
   }
 
-  const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true });
-  return new Uint8Array(excelBuffer);
+  recordExportBatch(operation.id, template.sha256, result.entries);
+
+  const rawName = operation.excelFileName || `${operation.name}_fawater.xlsx`;
+  const fileName = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
+
+  return {
+    ...result,
+    fileName,
+    templateSha256: template.sha256,
+  };
 }
 
-export async function downloadWorkbook(workbook: XLSX.WorkBook, filename: string) {
-  XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`, { cellStyles: true });
-}
-
-export async function downloadExportWorkbook(
-  invoices: InvoiceRecord[],
-  operationName: string,
-  activityType: string,
-  filename: string
-) {
-  const buf = await generateExportWorkbook(invoices, operationName, activityType);
-  const blob = new Blob([buf.buffer as ArrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+export async function downloadOperationExcel(operation: Operation): Promise<ExportExecutionResult> {
+  const result = await exportOperationToExcel(operation);
+  const blob = new Blob([result.buffer.buffer as ArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`;
+  a.download = result.fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-}
-
-export async function parseUploadedExcel(file: File) {
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array', cellDates: true, cellStyles: true });
-  const sheetNames = workbook.SheetNames;
-  const sheetsPreview: Record<string, any> = {};
-
-  for (const name of sheetNames) {
-    const worksheet = workbook.Sheets[name];
-    const jsonRows = XLSX.utils.sheet_to_json<any>(worksheet, { header: 1 });
-    const totalRows = jsonRows.length;
-    let columns: string[] = [];
-    let sampleRows: any[] = [];
-
-    if (totalRows > 0) {
-      columns = (jsonRows[0] as any[]).map((c, idx) => String(c || `عمود ${idx + 1}`));
-      sampleRows = jsonRows.slice(1, 6);
-    }
-
-    sheetsPreview[name] = {
-      sheetName: name,
-      columns,
-      sampleRows,
-      totalRows,
-    };
-  }
-
-  return {
-    sheetNames,
-    sheetsPreview,
-    workbook,
-  };
+  return result;
 }

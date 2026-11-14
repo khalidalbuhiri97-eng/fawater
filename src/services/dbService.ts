@@ -1,203 +1,324 @@
-import { Operation, InvoiceRecord } from '../types';
-import * as XLSX from 'xlsx';
+import { Operation, InvoiceRecord, ActivityType, ExportTrackingEntry, ExportTrackingRecord } from '../types';
+import { clearLegacyTemplateCaches } from './templateService';
 
 const STORAGE_KEY = 'sooq_operations_db_v2';
-const TEMPLATE_STORAGE_KEY = 'fawater_custom_template_base64';
+const EXPORT_TRACKING_KEY = 'fawater_export_tracking_v1';
+
+const IMAGES_DB_NAME = 'fawater_images_db';
+const IMAGES_DB_VERSION = 1;
+const IMAGES_STORE_NAME = 'invoice_images';
+
+interface StoredImageRecord {
+  invoiceId: string;
+  imageBase64: string;
+  imageMimeType: string;
+  updatedAt: string;
+}
+
+function openImagesDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB غير متوفر في هذه البيئة'));
+      return;
+    }
+    const req = indexedDB.open(IMAGES_DB_NAME, IMAGES_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IMAGES_STORE_NAME)) {
+        db.createObjectStore(IMAGES_STORE_NAME, { keyPath: 'invoiceId' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('فشل فتح قاعدة بيانات صور الفواتير'));
+  });
+}
+
+export async function saveInvoiceImage(
+  invoiceId: string,
+  imageBase64: string,
+  imageMimeType: string = 'image/jpeg'
+): Promise<void> {
+  if (!imageBase64) return;
+  const db = await openImagesDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGES_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(IMAGES_STORE_NAME);
+    const req = store.put({
+      invoiceId,
+      imageBase64,
+      imageMimeType,
+      updatedAt: new Date().toISOString(),
+    } as StoredImageRecord);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error || new Error('فشل حفظ صورة الفاتورة في IndexedDB'));
+  });
+}
+
+export async function getInvoiceImage(
+  invoiceId: string
+): Promise<{ imageBase64: string; imageMimeType: string } | null> {
+  try {
+    const db = await openImagesDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(IMAGES_STORE_NAME, 'readonly');
+      const store = tx.objectStore(IMAGES_STORE_NAME);
+      const req = store.get(invoiceId);
+      req.onsuccess = () => {
+        const res = req.result as StoredImageRecord | undefined;
+        resolve(res ? { imageBase64: res.imageBase64, imageMimeType: res.imageMimeType } : null);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteInvoiceImage(invoiceId: string): Promise<void> {
+  try {
+    const db = await openImagesDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(IMAGES_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(IMAGES_STORE_NAME);
+      const req = store.delete(invoiceId);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
+export async function hydrateOperationImages(operation: Operation): Promise<Operation> {
+  const invoices = operation.invoices || [];
+  const hydratedInvoices = await Promise.all(
+    invoices.map(async (inv) => {
+      if (inv.imageBase64) {
+        return { ...inv, hasImage: true };
+      }
+      const stored = await getInvoiceImage(inv.id);
+      if (stored) {
+        return {
+          ...inv,
+          hasImage: true,
+          imageBase64: stored.imageBase64,
+          imageMimeType: inv.imageMimeType || stored.imageMimeType,
+        };
+      }
+      return inv;
+    })
+  );
+  return { ...operation, invoices: hydratedInvoices };
+}
+
+function stripHeavyFieldsForStorage(ops: Operation[]): Operation[] {
+  return ops.map((op) => {
+    const { excelBase64: _ignoredExcel, ...restOp } = op as any;
+    return {
+      ...restOp,
+      templateType: 'official' as const,
+      invoices: (op.invoices || []).map((inv) => {
+        const { imageBase64, ...restInv } = inv;
+        return {
+          ...restInv,
+          hasImage: Boolean(inv.hasImage || imageBase64),
+        };
+      }),
+    };
+  });
+}
+
+async function migrateLegacyImagesToIndexedDb(ops: Operation[]): Promise<boolean> {
+  let migratedAny = false;
+  for (const op of ops) {
+    for (const inv of op.invoices || []) {
+      if (inv.imageBase64) {
+        try {
+          await saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg');
+          migratedAny = true;
+        } catch (err) {
+          console.error('Failed migrating legacy invoice image to IndexedDB:', inv.id, err);
+        }
+      }
+    }
+  }
+  return migratedAny;
+}
 
 export function getOperations(): Operation[] {
+  clearLegacyTemplateCaches();
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (!data) {
-      const defaultOp: Operation = {
-        id: 'op_' + Date.now(),
-        name: 'حسابات المؤسسة',
-        activityType: 'تجارة عامة',
-        createdAt: new Date().toISOString().split('T')[0],
-        updatedAt: new Date().toISOString().split('T')[0],
-        templateType: 'new',
-        customFields: [],
-        invoices: [],
-        excelFileName: 'fawater_export.xlsx'
-      };
+      const defaultOp = createOperationObject('حسابات المؤسسة', 'تجارة عامة');
       saveOperations([defaultOp]);
       return [defaultOp];
     }
-    return JSON.parse(data);
+    const parsed: Operation[] = JSON.parse(data);
+
+    // If legacy records still contain inline base64 images, migrate them cleanly to IndexedDB
+    const hasInlineImages = parsed.some(
+      (op) => (op as any).excelBase64 || (op.invoices || []).some((inv) => Boolean(inv.imageBase64))
+    );
+    if (hasInlineImages) {
+      migrateLegacyImagesToIndexedDb(parsed).then(() => {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(stripHeavyFieldsForStorage(parsed)));
+        } catch (err) {
+          console.error('Failed compacting localStorage after image migration:', err);
+        }
+      });
+    }
+
+    return parsed.map((op) => ({
+      ...op,
+      templateType: 'official' as const,
+    }));
   } catch (e) {
     console.error('Error reading operations:', e);
-    return [];
+    throw new Error('تعذر قراءة بيانات العمليات من التخزين المحلي.');
   }
 }
 
 export function saveOperations(ops: Operation[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(ops));
-  } catch (e) {
-    console.error('LocalStorage quota exceeded, trimming image base64:', e);
-    const trimmed = ops.map(op => ({
-      ...op,
-      invoices: (op.invoices || []).map(inv => ({
-        ...inv,
-        imageBase64: inv.imageBase64 && inv.imageBase64.length > 50000 ? undefined : inv.imageBase64
-      }))
-    }));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+  clearLegacyTemplateCaches();
+
+  // Persist any inline images in memory to IndexedDB asynchronously (without blocking metadata save)
+  for (const op of ops) {
+    for (const inv of op.invoices || []) {
+      if (inv.imageBase64) {
+        saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg').catch((err) => {
+          console.error('Error saving invoice image to IndexedDB:', err);
+        });
+      }
+    }
   }
+
+  const sanitized = stripHeavyFieldsForStorage(ops);
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+  } catch (e: any) {
+    throw new Error(
+      'تجاوزت البيانات الحد المتاح في التخزين المحلي (localStorage). يرجى مراجعة البيانات أو تصدير الملفات وحذف العمليات غير المطلوبة.'
+    );
+  }
+}
+
+export async function saveOperationWithImages(op: Operation): Promise<void> {
+  for (const inv of op.invoices || []) {
+    if (inv.imageBase64) {
+      await saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg');
+    }
+  }
+  saveOperation(op);
 }
 
 export function getOperationById(id: string): Operation | undefined {
   const ops = getOperations();
-  return ops.find(o => o.id === id);
+  return ops.find((o) => o.id === id);
 }
 
 export function saveOperation(op: Operation) {
   const ops = getOperations();
-  const index = ops.findIndex(o => o.id === op.id);
-  op.updatedAt = new Date().toISOString().split('T')[0];
+  const index = ops.findIndex((o) => o.id === op.id);
+  const updatedOp: Operation = {
+    ...op,
+    templateType: 'official',
+    updatedAt: new Date().toISOString().split('T')[0],
+  };
   if (index >= 0) {
-    ops[index] = op;
+    ops[index] = updatedOp;
   } else {
-    ops.unshift(op);
+    ops.unshift(updatedOp);
   }
   saveOperations(ops);
 }
 
 export function deleteOperation(id: string) {
   const ops = getOperations();
-  const filtered = ops.filter(o => o.id !== id);
+  const target = ops.find((o) => o.id === id);
+  if (target) {
+    for (const inv of target.invoices || []) {
+      deleteInvoiceImage(inv.id).catch(() => {});
+    }
+  }
+  const filtered = ops.filter((o) => o.id !== id);
   saveOperations(filtered);
+  clearExportTracking(id);
 }
 
-/**
- * Loads the official template from /assets/templates/fawater_template.xlsx or fallback
- */
-export async function loadOfficialTemplateWorkbook(): Promise<XLSX.WorkBook> {
-  const customTpl = localStorage.getItem(TEMPLATE_STORAGE_KEY);
-  if (customTpl) {
-    try {
-      const bytes = Uint8Array.from(atob(customTpl), c => c.charCodeAt(0));
-      return XLSX.read(bytes, { type: 'array', cellStyles: true, cellDates: true });
-    } catch (e) {
-      console.error('Error reading custom template, falling back to default:', e);
-    }
-  }
-
-  try {
-    const res = await fetch('/assets/templates/fawater_template.xlsx');
-    if (res.ok) {
-      const arrayBuf = await res.arrayBuffer();
-      return XLSX.read(arrayBuf, { type: 'array', cellStyles: true, cellDates: true });
-    }
-  } catch (e) {
-    console.warn('Could not fetch fawater_template.xlsx from assets, generating pristine workbook:', e);
-  }
-
-  const wb = XLSX.utils.book_new();
-  
-  const wsSummary = XLSX.utils.aoa_to_sheet([
-    ['', 'نظام إدارة الحسابات - Fawater'],
-    ['', 'ملخص المبيعات اليومية، المشتريات، والأرصدة المالية'],
-    ['', ''],
-    ['', 'إجمالي المبيعات', '', 'إجمالي المشتريات (شامل الضريبة)', '', 'صافي التدفق (المبيعات - المشتريات)'],
-    ['', 0, '', 0, '', 0],
-    ['', ''],
-    ['', 'آخر رصيد كاش', '', 'آخر رصيد صندوق', '', 'آخر رصيد شبكة (بنك)'],
-    ['', '#N/A', '', '#N/A', '', '#N/A']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'ملخص الأداء');
-
-  const wsSales = XLSX.utils.aoa_to_sheet([
-    ['سجل المبيعات اليومية والأرصدة', '', '', '', '', '', '', ''],
-    ['', '', '', '', '', '', '', ''],
-    ['بيانات المبيعات اليومية', '', '', '', '', 'الأرصدة وتتبع النقدية', '', ''],
-    ['التاريخ', 'اليوم', 'المبيعات النقدية (الكاش)', 'الشبكة', 'إجمالي المبيعات', 'رصيد الكاش', 'رصيد الصندوق', 'رصيد الشبكة (البنك)']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsSales, 'المبيعات');
-
-  const wsPurchases = XLSX.utils.aoa_to_sheet([
-    ['سجل المشتريات والموردين', '', '', '', '', ''],
-    ['', '', '', '', '', ''],
-    ['التاريخ', 'اسم المورد', 'المبلغ قبل الضريبة', 'ضريبة القيمة المضافة', 'الإجمالي شامل الضريبة', 'الرصيد']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsPurchases, 'المشتريات والموردين');
-
-  return wb;
-}
-
-export function getWorkbookFromOperation(op: Operation): XLSX.WorkBook {
-  const wb = XLSX.utils.book_new();
-  
-  const wsSummary = XLSX.utils.aoa_to_sheet([
-    ['', `نظام إدارة الحسابات - ${op.name}`],
-    ['', 'ملخص المبيعات اليومية، المشتريات، والأرصدة المالية'],
-    ['', ''],
-    ['', 'إجمالي المبيعات', '', 'إجمالي المشتريات (شامل الضريبة)', '', 'صافي التدفق (المبيعات - المشتريات)'],
-    ['', 0, '', 0, '', 0],
-    ['', ''],
-    ['', 'آخر رصيد كاش', '', 'آخر رصيد صندوق', '', 'آخر رصيد شبكة (بنك)'],
-    ['', '#N/A', '', '#N/A', '', '#N/A']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'ملخص الأداء');
-
-  const wsSales = XLSX.utils.aoa_to_sheet([
-    [`سجل المبيعات اليومية والأرصدة - ${op.name}`, '', '', '', '', '', '', ''],
-    ['', '', '', '', '', '', '', ''],
-    ['بيانات المبيعات اليومية', '', '', '', '', 'الأرصدة وتتبع النقدية', '', ''],
-    ['التاريخ', 'اليوم', 'المبيعات النقدية (الكاش)', 'الشبكة', 'إجمالي المبيعات', 'رصيد الكاش', 'رصيد الصندوق', 'رصيد الشبكة (البنك)']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsSales, 'المبيعات');
-
-  const wsPurchases = XLSX.utils.aoa_to_sheet([
-    [`سجل المشتريات والموردين - ${op.name}`, '', '', '', '', ''],
-    ['', '', '', '', '', ''],
-    ['التاريخ', 'اسم المورد', 'المبلغ قبل الضريبة', 'ضريبة القيمة المضافة', 'الإجمالي شامل الضريبة', 'الرصيد']
-  ]);
-  XLSX.utils.book_append_sheet(wb, wsPurchases, 'المشتريات والموردين');
-
-  return wb;
-}
-
-export function createOperationObject(
-  name: string,
-  activityType: any,
-  templateType: 'new' | 'custom',
-  excelFileName: string,
-  _customWb?: any
-): Operation {
+export function createOperationObject(name: string, activityType: ActivityType): Operation {
+  const today = new Date().toISOString().split('T')[0];
+  const safeFileBase = name.trim().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_') || 'fawater';
   return {
     id: 'op_' + Date.now() + Math.random().toString(36).substring(2, 6),
-    name,
+    name: name.trim(),
     activityType,
-    createdAt: new Date().toISOString().split('T')[0],
-    updatedAt: new Date().toISOString().split('T')[0],
-    templateType,
+    createdAt: today,
+    updatedAt: today,
+    templateType: 'official',
     customFields: [],
     invoices: [],
-    excelFileName: 'fawater_export.xlsx'
+    excelFileName: `${safeFileBase}_fawater.xlsx`,
   };
 }
 
-export async function checkForTemplateUpdate(remoteUrl?: string): Promise<{ success: boolean; message: string }> {
-  const url = remoteUrl || 'https://raw.githubusercontent.com/your-repo/fawater/main/public/assets/templates/fawater_template.xlsx';
+// --- Independent Export Tracking ---
+
+function readAllExportTracking(): Record<string, ExportTrackingRecord> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('فشل الاتصال برابط التحديث');
-    const buf = await res.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true, cellStyles: true });
+    const raw = localStorage.getItem(EXPORT_TRACKING_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
 
-    const sheets = wb.SheetNames;
-    if (!sheets.includes('المبيعات') || !sheets.includes('المشتريات والموردين') || !sheets.includes('ملخص الأداء')) {
-      throw new Error('ملف القالب غير متوافق: مفقود إحدى أوراق العمل الرئيسية');
-    }
+export function getExportTracking(operationId: string): ExportTrackingRecord | null {
+  const all = readAllExportTracking();
+  return all[operationId] || null;
+}
 
-    let binary = '';
-    const bytes = new Uint8Array(buf);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    localStorage.setItem(TEMPLATE_STORAGE_KEY, btoa(binary));
-    return { success: true, message: 'تم تحديث قالب Excel والتحقق من سلامته بنجاح' };
-  } catch (err: any) {
-    return { success: false, message: err.message || 'فشل التحقق من التحديث أو الملف غير صالح' };
+export function recordExportBatch(
+  operationId: string,
+  templateSha256: string,
+  entries: ExportTrackingEntry[]
+): ExportTrackingRecord {
+  const all = readAllExportTracking();
+  const prev = all[operationId];
+  const mergedIds = Array.from(
+    new Set([...(prev?.exportedInvoiceIds || []), ...entries.map((e) => e.invoiceId)])
+  );
+  const entryMap = new Map<string, ExportTrackingEntry>();
+  for (const e of prev?.entries || []) {
+    entryMap.set(e.invoiceId, e);
+  }
+  for (const e of entries) {
+    entryMap.set(e.invoiceId, e);
+  }
+
+  const record: ExportTrackingRecord = {
+    operationId,
+    lastExportedAt: new Date().toISOString(),
+    templateSha256,
+    exportedInvoiceIds: mergedIds,
+    entries: Array.from(entryMap.values()),
+  };
+  all[operationId] = record;
+  try {
+    localStorage.setItem(EXPORT_TRACKING_KEY, JSON.stringify(all));
+  } catch {
+    // non-fatal tracking error
+  }
+  return record;
+}
+
+export function clearExportTracking(operationId: string): void {
+  try {
+    const all = readAllExportTracking();
+    delete all[operationId];
+    localStorage.setItem(EXPORT_TRACKING_KEY, JSON.stringify(all));
+  } catch {
+    // ignore
   }
 }
