@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Search, Trash2, Edit3 } from 'lucide-react';
-import { Operation } from '../types';
+import { DocumentType, Operation } from '../types';
 import { deleteInvoiceImage } from '../services/dbService';
 
 interface InvoicesTableProps {
@@ -36,6 +36,30 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
       ...operation,
       invoices: newInvoices,
       updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const handleDocumentTypeChange = (id: string, nextType: DocumentType) => {
+    const nowIso = new Date().toISOString();
+    const newInvoices = invoices.map((inv) => {
+      if (inv.id !== id) return inv;
+      const nextStatus =
+        nextType === 'يحتاج تحديد النوع' && inv.status === 'مكتملة'
+          ? 'تحتاج مراجعة'
+          : inv.status;
+      return {
+        ...inv,
+        documentType: nextType,
+        classificationReason: `تصنيف يدوي (${nextType})`,
+        status: nextStatus,
+        syncStatus: 'pending' as const,
+        updatedAt: nowIso,
+      };
+    });
+    onUpdateOperation({
+      ...operation,
+      invoices: newInvoices,
+      updatedAt: nowIso,
     });
   };
 
@@ -104,17 +128,22 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
                       {inv.invoiceDate || <span className="text-amber-600 font-semibold">غير محدد</span>}
                     </td>
                     <td className="p-4">
-                      <span
-                        className={`px-2.5 py-0.5 rounded-md font-medium ${
+                      <select
+                        value={inv.documentType}
+                        onChange={(e) => handleDocumentTypeChange(inv.id, e.target.value as DocumentType)}
+                        aria-label="تصنيف الفاتورة"
+                        className={`px-2.5 py-1 rounded-lg font-bold text-xs border outline-none cursor-pointer transition ${
                           inv.documentType === 'يحتاج تحديد النوع'
-                            ? 'bg-amber-100 text-amber-800'
+                            ? 'bg-amber-50 border-amber-300 text-amber-800'
                             : inv.documentType === 'مبيعات'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-blue-100 text-blue-800'
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                            : 'bg-blue-50 border-blue-300 text-blue-800'
                         }`}
                       >
-                        {inv.documentType}
-                      </span>
+                        <option value="مبيعات">مبيعات</option>
+                        <option value="مشتريات">مشتريات</option>
+                        <option value="يحتاج تحديد النوع">يحتاج تحديد النوع</option>
+                      </select>
                     </td>
                     <td className="p-4 text-slate-800 font-medium">{inv.issuerName || '—'}</td>
                     <td className="p-4 text-slate-700">{col1 !== undefined ? col1.toFixed(2) : '—'}</td>

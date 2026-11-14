@@ -66,6 +66,20 @@ export const Navbar: React.FC<NavbarProps> = ({
       );
     }
 
+    if (syncOverview.status === 'connection_error' || (syncOverview.supabaseConfigured && !syncOverview.supabaseConnected)) {
+      return (
+        <button
+          type="button"
+          onClick={onManualSync}
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-950/80 border border-red-700/60 text-red-200 text-xs hover:bg-red-900/80 transition"
+          title={syncOverview.lastError || 'اتصال Supabase غير جاهز — الحفظ يعمل محلياً في IndexedDB'}
+        >
+          <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+          <span>تعذر ربط Supabase (حفظ محلي)</span>
+        </button>
+      );
+    }
+
     if (syncOverview.status === 'failed') {
       return (
         <button
@@ -93,17 +107,21 @@ export const Navbar: React.FC<NavbarProps> = ({
       );
     }
 
-    return (
-      <button
-        type="button"
-        onClick={onManualSync}
-        className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-700/50 text-emerald-200 text-xs hover:bg-emerald-900/70 transition"
-        title="متصل ومتزامن مع Supabase"
-      >
-        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-        <span>متصل ومتزامن</span>
-      </button>
-    );
+    if (syncOverview.supabaseConnected && syncOverview.status === 'synced') {
+      return (
+        <button
+          type="button"
+          onClick={onManualSync}
+          className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-700/50 text-emerald-200 text-xs hover:bg-emerald-900/70 transition"
+          title="متصل ومتزامن مع Supabase"
+        >
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          <span>متصل ومتزامن</span>
+        </button>
+      );
+    }
+
+    return null;
   };
 
   return (

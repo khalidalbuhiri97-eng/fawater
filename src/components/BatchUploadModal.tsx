@@ -82,11 +82,14 @@ function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): I
   };
 }
 
+type AiClassificationChoice = 'auto' | 'مبيعات' | 'مشتريات';
+
 interface AiBatchResult {
   fileName: string;
   invoiceId: string;
   success: boolean;
   documentType?: DocumentType;
+  classification?: AiClassificationChoice;
   error?: string;
   file?: File;
   base64?: string;
@@ -107,7 +110,10 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [templateError, setTemplateError] = useState('');
 
   // AI mode state
-  const [selectedFiles, setSelectedFiles] = useState<{ file: File; base64: string; mimeType: string }[]>([]);
+  const [aiDefaultClassification, setAiDefaultClassification] = useState<AiClassificationChoice>('auto');
+  const [selectedFiles, setSelectedFiles] = useState<
+    { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[]
+  >([]);
   const [extracting, setExtracting] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, success: 0, failed: 0 });
   const [aiResults, setAiResults] = useState<AiBatchResult[] | null>(null);
@@ -270,13 +276,28 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   };
 
   // --- AI Mode Handlers ---
+  const handleBatchClassificationChange = (choice: AiClassificationChoice) => {
+    setAiDefaultClassification(choice);
+    setSelectedFiles((prev) => prev.map((f) => ({ ...f, classification: choice })));
+  };
+
+  const handleSingleFileClassificationChange = (index: number, choice: AiClassificationChoice) => {
+    setSelectedFiles((prev) =>
+      prev.map((f, idx) => (idx === index ? { ...f, classification: choice } : f))
+    );
+  };
+
+  const handleRemoveSelectedFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
   const handleAiFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const files = Array.from(e.target.files);
     setErrorMsg('');
     setAiResults(null);
 
-    const newItems: { file: File; base64: string; mimeType: string }[] = [];
+    const newItems: { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[] = [];
     for (const file of files) {
       try {
         const base64 = await fileToBase64(file);
@@ -284,6 +305,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           file,
           base64,
           mimeType: file.type || 'image/jpeg',
+          classification: aiDefaultClassification,
         });
       } catch (err) {
         console.error('Error reading file:', err);
@@ -330,7 +352,10 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         organizationId: operation.id,
         invoiceNumber: '',
         invoiceDate: '',
-        documentType: 'يحتاج تحديد النوع',
+        documentType:
+          item.classification === 'مبيعات' || item.classification === 'مشتريات'
+            ? item.classification
+            : 'يحتاج تحديد النوع',
         entryMethod: 'ai',
         issuerName: '',
         clientName: '',
@@ -369,6 +394,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             customFields: operation.customFields,
             organizationName: operation.name,
             activityType: operation.activityType,
+            manualDocumentType: item.classification,
           }),
         });
 
@@ -376,7 +402,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         if (res.ok && data.success && data.data) {
           const ext = data.data;
           const classifiedType: DocumentType =
-            ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
+            item.classification === 'مبيعات' || item.classification === 'مشتريات'
+              ? item.classification
+              : ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
               ? ext.documentType
               : 'يحتاج تحديد النوع';
 
@@ -422,6 +450,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             invoiceId: invId,
             success: true,
             documentType: classifiedType,
+            classification: item.classification,
           });
         } else {
           const errText = data?.error || `فشل الاستخراج الذكي (رمز ${res.status})`;
@@ -432,6 +461,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             fileName: item.file.name,
             invoiceId: invId,
             success: false,
+            classification: item.classification,
             error: errText,
             file: item.file,
             base64: item.base64,
@@ -447,6 +477,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           fileName: item.file.name,
           invoiceId: invId,
           success: false,
+          classification: item.classification,
           error: errText,
           file: item.file,
           base64: item.base64,
@@ -497,6 +528,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           customFields: operation.customFields,
           organizationName: operation.name,
           activityType: operation.activityType,
+          manualDocumentType: targetResult.classification || 'auto',
         }),
       });
       const data = await res.json();
@@ -505,7 +537,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
       if (res.ok && data.success && data.data) {
         const ext = data.data;
         const classifiedType: DocumentType =
-          ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
+          targetResult.classification === 'مبيعات' || targetResult.classification === 'مشتريات'
+            ? targetResult.classification
+            : ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
             ? ext.documentType
             : 'يحتاج تحديد النوع';
 
@@ -975,6 +1009,41 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 </div>
               )}
 
+              {/* Manual / Auto Classification Selector for AI */}
+              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/80 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-bold text-slate-800">
+                    تصنيف الفواتير للذكاء الاصطناعي:
+                  </label>
+                  <span className="text-[11px] text-slate-500">
+                    يمكنك تحديد النوع يدوياً مسبقاً أو تركه تلقائياً، كما يمكنك التخصيص لكل ملف
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2.5">
+                  {(
+                    [
+                      { id: 'auto', label: 'تلقائي (AI)', sub: 'يحدد Gemini النوع' },
+                      { id: 'مبيعات', label: 'مبيعات', sub: 'توجيه كل الملفات كمبيعات' },
+                      { id: 'مشتريات', label: 'مشتريات', sub: 'توجيه كل الملفات كمشتريات' },
+                    ] as { id: AiClassificationChoice; label: string; sub: string }[]
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => handleBatchClassificationChange(opt.id)}
+                      className={`p-2.5 rounded-xl border text-right transition ${
+                        aiDefaultClassification === opt.id
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-500/20'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <div className="font-bold text-xs">{opt.label}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">{opt.sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="border-2 border-dashed border-slate-300 rounded-2xl p-8 text-center bg-slate-50 hover:bg-slate-100/50 transition cursor-pointer">
                 <input
                   type="file"
@@ -993,7 +1062,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       انقر لاختيار صور أو ملفات الفواتير للاستخراج الذكي
                     </span>
                     <p className="text-xs text-slate-500 mt-1">
-                      يتم إرسال محتوى الصورة الفعلي إلى Gemini لتحديد النوع (مبيعات / مشتريات) واستخراج الحقول
+                      {aiDefaultClassification === 'auto'
+                        ? 'يتم إرسال محتوى الصورة الفعلي إلى Gemini لتحديد النوع (مبيعات / مشتريات) واستخراج الحقول'
+                        : `سيتم توجيه الذكاء الاصطناعي لاستخراج الفواتير بتصنيف "${aiDefaultClassification}" مباشرة`}
                     </p>
                   </div>
                 </label>
@@ -1007,11 +1078,44 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       إزالة الكل
                     </button>
                   </div>
-                  <div className="max-h-40 overflow-y-auto space-y-1.5">
+                  <div className="max-h-52 overflow-y-auto space-y-1.5">
                     {selectedFiles.map((f, idx) => (
-                      <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border text-xs">
-                        <span className="font-medium text-slate-800 truncate">{f.file.name}</span>
-                        <span className="text-slate-400">{(f.file.size / 1024).toFixed(1)} KB</span>
+                      <div
+                        key={idx}
+                        className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-xl border text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="font-medium text-slate-800 truncate">{f.file.name}</span>
+                          <span className="text-slate-400 shrink-0">{(f.file.size / 1024).toFixed(1)} KB</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                            {(['auto', 'مبيعات', 'مشتريات'] as AiClassificationChoice[]).map((choice) => (
+                              <button
+                                key={choice}
+                                type="button"
+                                onClick={() => handleSingleFileClassificationChange(idx, choice)}
+                                className={`px-2 py-1 rounded-md text-[11px] font-bold transition ${
+                                  f.classification === choice
+                                    ? choice === 'auto'
+                                      ? 'bg-slate-800 text-white'
+                                      : 'bg-emerald-600 text-white'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                }`}
+                              >
+                                {choice === 'auto' ? 'تلقائي' : choice}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSelectedFile(idx)}
+                            className="p-1 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition"
+                            title="إزالة الملف"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

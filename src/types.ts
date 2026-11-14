@@ -140,7 +140,7 @@ export interface SyncOverview {
   pendingCount: number;
   failedCount: number;
   syncingCount: number;
-  status: 'offline' | 'local_only' | 'pending' | 'syncing' | 'synced' | 'failed';
+  status: 'offline' | 'local_only' | 'connection_error' | 'pending' | 'syncing' | 'synced' | 'failed';
   lastSyncAt?: string;
   lastError?: string;
 }

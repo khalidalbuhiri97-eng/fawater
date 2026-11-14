@@ -94,6 +94,8 @@ export async function refreshSyncOverview(): Promise<SyncOverview> {
     status = 'syncing';
   } else if (failedCount > 0) {
     status = 'failed';
+  } else if (currentOverview.supabaseConfigured && !currentOverview.supabaseConnected) {
+    status = 'connection_error';
   } else if (pendingCount > 0) {
     status = 'pending';
   } else if (currentOverview.supabaseConnected) {
@@ -174,13 +176,13 @@ export async function checkSupabaseServerStatus(): Promise<{
     const res = await fetch('/api/supabase/status', { cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     const configured = Boolean(data?.configured);
-    const connected = Boolean(res.ok && data?.connected);
+    const connected = Boolean(res.ok && data?.connected && data?.bucketsReady);
     currentOverview = {
       ...currentOverview,
       isOnline: true,
       supabaseConfigured: configured,
       supabaseConnected: connected,
-      lastError: connected ? undefined : data?.error,
+      lastError: connected ? undefined : data?.error || 'تعذر التحقق من جاهزية Supabase',
     };
     await refreshSyncOverview();
     return { configured, connected, error: data?.error };
@@ -482,6 +484,12 @@ export async function pullFromSupabaseAndMerge(): Promise<boolean> {
     const pendingInvUpserts = new Set(
       queue.filter((q) => q.entityType === 'invoice').map((q) => q.entityId)
     );
+    const pendingFieldDeletes = new Set(
+      queue.filter((q) => q.entityType === 'delete_custom_field').map((q) => q.entityId)
+    );
+    const pendingFieldUpserts = new Set(
+      queue.filter((q) => q.entityType === 'custom_field').map((q) => q.entityId)
+    );
 
     const localOrgs = await readAllOrganizationsFromStore();
     const localOrgMap = new Map(localOrgs.map((o) => [o.id, o]));
@@ -489,19 +497,32 @@ export async function pullFromSupabaseAndMerge(): Promise<boolean> {
     for (const remoteOrg of organizations) {
       if (pendingOrgDeletes.has(remoteOrg.id)) continue;
 
+      const localOrg = localOrgMap.get(remoteOrg.id);
+      const localFieldMap = new Map((localOrg?.customFields || []).map((cf) => [cf.id, cf]));
+
       const orgFields: CustomField[] = custom_fields
-        .filter((cf: any) => cf.organization_id === remoteOrg.id)
-        .map((cf: any) => ({
-          id: cf.id,
-          name: cf.name,
-          type: cf.field_type,
-          required: Boolean(cf.is_required),
-          aiExtract: Boolean(cf.ai_extract),
-          manual: Boolean(cf.manual_entry),
-          excelSheet: cf.excel_sheet,
-          excelColumn: cf.excel_column,
-          options: cf.options || undefined,
-        }));
+        .filter((cf: any) => cf.organization_id === remoteOrg.id && !pendingFieldDeletes.has(cf.id))
+        .map((cf: any) => {
+          const localMatch = localFieldMap.get(cf.id);
+          if (localMatch && pendingFieldUpserts.has(cf.id)) return localMatch;
+          return {
+            id: cf.id,
+            name: cf.name,
+            type: cf.field_type,
+            required: Boolean(cf.is_required),
+            aiExtract: Boolean(cf.ai_extract),
+            manual: Boolean(cf.manual_entry),
+            excelSheet: cf.excel_sheet,
+            excelColumn: cf.excel_column,
+            options: cf.options || undefined,
+          };
+        });
+      // Keep local-only pending custom fields not yet synced
+      for (const lCf of localOrg?.customFields || []) {
+        if (!pendingFieldDeletes.has(lCf.id) && !orgFields.some((f) => f.id === lCf.id)) {
+          orgFields.push(lCf);
+        }
+      }
 
       const orgRemoteInvoices: InvoiceRecord[] = invoices
         .filter((inv: any) => inv.organization_id === remoteOrg.id && !pendingInvDeletes.has(inv.id))
@@ -570,7 +591,6 @@ export async function pullFromSupabaseAndMerge(): Promise<boolean> {
           };
         });
 
-      const localOrg = localOrgMap.get(remoteOrg.id);
       let mergedInvoices = orgRemoteInvoices;
 
       if (localOrg) {

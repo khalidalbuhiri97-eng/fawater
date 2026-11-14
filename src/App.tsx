@@ -9,7 +9,7 @@ import {
 } from './services/dbService';
 import { downloadOperationExcel } from './services/excelService';
 import { getOfficialTemplate } from './services/templateService';
-import { subscribeSyncStatus, syncAllPending } from './services/syncService';
+import { getSyncOverview, subscribeSyncStatus, syncAllPending } from './services/syncService';
 import { Navbar } from './components/Navbar';
 import { OperationsList } from './components/OperationsList';
 import { NewOperationModal } from './components/NewOperationModal';
@@ -55,9 +55,15 @@ export default function App() {
 
   const handleManualSync = async () => {
     const res = await syncAllPending();
+    const overview = getSyncOverview();
     const freshOps = await getOperations();
     setOperations(freshOps);
-    if (res.failed > 0) {
+    if (res.skipped && !overview.supabaseConnected) {
+      setBanner({
+        type: 'error',
+        text: overview.lastError || 'تعذر الاتصال بـ Supabase — البيانات محفوظة بأمان محلياً في IndexedDB.',
+      });
+    } else if (res.failed > 0) {
       setBanner({
         type: 'error',
         text: `تمت مزامنة ${res.synced} عنصر وتعذر مزامنة ${res.failed} عنصر. تم حفظها بأمان محلياً لإعادة المحاولة.`,
@@ -66,6 +72,11 @@ export default function App() {
       setBanner({
         type: 'success',
         text: `تمت مزامنة ${res.synced} سجل بنجاح مع قاعدة البيانات.`,
+      });
+    } else if (overview.supabaseConnected) {
+      setBanner({
+        type: 'success',
+        text: 'تم فحص الاتصال: جميع البيانات متزامنة مع Supabase بنجاح.',
       });
     }
   };

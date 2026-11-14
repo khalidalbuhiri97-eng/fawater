@@ -52,9 +52,19 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
   const [zoom, setZoom] = useState(1);
   const [extractingSingle, setExtractingSingle] = useState(false);
+  const [aiClassifyHint, setAiClassifyHint] = useState<'auto' | 'مبيعات' | 'مشتريات'>('auto');
   const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
   const [hydratedImages, setHydratedImages] = useState<Record<string, { base64: string; mimeType: string }>>({});
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!currentInvoice) return;
+    if (currentInvoice.documentType === 'مبيعات' || currentInvoice.documentType === 'مشتريات') {
+      setAiClassifyHint(currentInvoice.documentType);
+    } else {
+      setAiClassifyHint('auto');
+    }
+  }, [currentInvoice?.id]);
 
   useEffect(() => {
     getOfficialTemplate()
@@ -229,6 +239,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           customFields: operation.customFields,
           organizationName: operation.name,
           activityType: operation.activityType,
+          manualDocumentType: aiClassifyHint,
         }),
       });
 
@@ -236,7 +247,9 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       if (res.ok && data.success && data.data) {
         const ext = data.data;
         const classifiedType: DocumentType =
-          ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
+          aiClassifyHint === 'مبيعات' || aiClassifyHint === 'مشتريات'
+            ? aiClassifyHint
+            : ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
             ? ext.documentType
             : 'يحتاج تحديد النوع';
 
@@ -433,14 +446,27 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <RotateCcw className="w-4 h-4" />
             </button>
             {activeImg?.base64 && (
-              <button
-                onClick={handleRunAiForThis}
-                disabled={extractingSingle}
-                className="mr-2 flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white rounded-lg text-xs font-bold transition"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>{extractingSingle ? 'جاري الاستخراج...' : 'قراءة بالذكاء الاصطناعي'}</span>
-              </button>
+              <div className="mr-2 flex items-center gap-1.5">
+                <select
+                  value={aiClassifyHint}
+                  onChange={(e) => setAiClassifyHint(e.target.value as 'auto' | 'مبيعات' | 'مشتريات')}
+                  disabled={extractingSingle}
+                  aria-label="تصنيف الفاتورة للذكاء الاصطناعي"
+                  className="px-2.5 py-1.5 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg text-xs font-semibold outline-none focus:ring-1 focus:ring-emerald-500"
+                >
+                  <option value="auto">تصنيف تلقائي (AI)</option>
+                  <option value="مبيعات">كمبيعات (يدوي)</option>
+                  <option value="مشتريات">كمشتريات (يدوي)</option>
+                </select>
+                <button
+                  onClick={handleRunAiForThis}
+                  disabled={extractingSingle}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white rounded-lg text-xs font-bold transition"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{extractingSingle ? 'جاري الاستخراج...' : 'قراءة بالذكاء الاصطناعي'}</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -538,7 +564,10 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <button
                 key={typeOpt}
                 type="button"
-                onClick={() => handleFieldChange('documentType', typeOpt)}
+                onClick={() => {
+                  handleFieldChange('documentType', typeOpt);
+                  setAiClassifyHint(typeOpt === 'يحتاج تحديد النوع' ? 'auto' : typeOpt);
+                }}
                 className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition ${
                   currentInvoice.documentType === typeOpt
                     ? typeOpt === 'يحتاج تحديد النوع'

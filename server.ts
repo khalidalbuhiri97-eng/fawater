@@ -149,7 +149,20 @@ async function startServer() {
   // =========================================================================
   app.post('/api/extract-invoice', async (req, res) => {
     const startedAt = Date.now();
-    const { imageBase64, mimeType, fileName, customFields, organizationName, activityType, invoiceId } = req.body || {};
+    const {
+      imageBase64,
+      mimeType,
+      fileName,
+      customFields,
+      organizationName,
+      activityType,
+      invoiceId,
+      manualDocumentType,
+    } = req.body || {};
+
+    const normalizedManualType = normalizeDocumentType(manualDocumentType);
+    const hasManualClassification =
+      normalizedManualType === 'مبيعات' || normalizedManualType === 'مشتريات';
 
     try {
       const apiKey = process.env.GEMINI_API_KEY;
@@ -189,7 +202,9 @@ async function startServer() {
       }
 
       console.info(
-        `[/api/extract-invoice] Processing (${safeMimeType}, ${(decodedSize / 1024).toFixed(1)} KB) for "${organizationName || 'N/A'}"`
+        `[/api/extract-invoice] Processing (${safeMimeType}, ${(decodedSize / 1024).toFixed(1)} KB, type=${
+          hasManualClassification ? normalizedManualType : 'auto'
+        }) for "${organizationName || 'N/A'}"`
       );
 
       const ai = new GoogleGenAI({
@@ -205,15 +220,21 @@ async function startServer() {
         ? `اسم المؤسسة صاحبة الحساب في التطبيق: "${organizationName}" (${activityType || 'نشاط تجاري'}).`
         : 'حلّل أطراف الفاتورة ومحتواها لتحديد ما إذا كانت عملية بيع صادرة أم عملية شراء واردة.';
 
+      const classificationInstruction = hasManualClassification
+        ? normalizedManualType === 'مبيعات'
+          ? `1. documentType: حدّد المستخدم مسبقاً أن هذه الفاتورة هي "مبيعات" يدوياً. يجب إرجاع "مبيعات" كما هي، واستخراج البيانات على أساس أنها عملية بيع أو تقرير مبيعات يومي/نقطة بيع صادرة عن المؤسسة (وركّز على استخراج المبيعات النقدية cashSales ومبيعات الشبكة networkSales والإجمالي grandTotal والتاريخ واليوم).`
+          : `1. documentType: حدّد المستخدم مسبقاً أن هذه الفاتورة هي "مشتريات" يدوياً. يجب إرجاع "مشتريات" كما هي، واستخراج البيانات على أساس أنها فاتورة شراء واردة من مورد (وركّز على استخراج اسم المورد issuerName والمبلغ قبل الضريبة subtotal وضريبة القيمة المضافة taxAmount والإجمالي grandTotal والتاريخ).`
+        : `1. documentType: تصنيف نوع الفاتورة تلقائياً من محتوى الصورة والأطراف والعبارات فقط:
+   - "مبيعات": إذا كانت الفاتورة تمثل عملية بيع صادرة عن المؤسسة إلى عميل أو ملخص مبيعات/نقطة بيع يومي (Z-Report / إغلاق وردية / تقرير مبيعات كاش وشبكة).
+   - "مشتريات": إذا كانت الفاتورة تمثل عملية شراء قامت بها المؤسسة من مورد أو تاجر جملة أو مزود خدمة.
+   - "يحتاج تحديد النوع": إذا كانت الصورة غير واضحة أو تعذر الجزم بين المبيعات والمشتريات من محتوى المستند.`;
+
       const prompt = `أنت خبير محاسبي ومستخرج بيانات ذكي للفواتير والمستندات التجارية.
 ${orgContext}
 قم بقراءة وتحليل محتوى صورة/مستند الفاتورة المرفق فعلياً واستخرج البيانات بدقة بصيغة JSON صالحة فقط.
 
 الحقول المطلوب استخراجها (ضع null لأي حقل غير موجود أو غير مقروء في الصورة):
-1. documentType: تصنيف نوع الفاتورة تلقائياً من محتوى الصورة والأطراف والعبارات فقط:
-   - "مبيعات": إذا كانت الفاتورة تمثل عملية بيع صادرة عن المؤسسة إلى عميل أو ملخص مبيعات/نقطة بيع يومي (Z-Report / إغلاق وردية / تقرير مبيعات كاش وشبكة).
-   - "مشتريات": إذا كانت الفاتورة تمثل عملية شراء قامت بها المؤسسة من مورد أو تاجر جملة أو مزود خدمة.
-   - "يحتاج تحديد النوع": إذا كانت الصورة غير واضحة أو تعذر الجزم بين المبيعات والمشتريات من محتوى المستند.
+${classificationInstruction}
 2. classificationReason: سبب قصير بالعربية لتصنيف نوع الفاتورة بناءً على ما ظهر في الصورة.
 3. invoiceNumber: رقم الفاتورة (أو null).
 4. invoiceDate: تاريخ الفاتورة المطبوع بصيغة YYYY-MM-DD إن أمكن تحويله بدقة، أو null إذا لم يكن التاريخ موجوداً أو كان غير مقروء. (ممنوع اختراع تاريخ اليوم).
@@ -310,8 +331,16 @@ ${orgContext}
       }
 
       const sanitized = {
-        documentType: normalizeDocumentType(parsedData.documentType),
-        classificationReason: parsedData.classificationReason ? String(parsedData.classificationReason) : '',
+        documentType: hasManualClassification
+          ? normalizedManualType
+          : normalizeDocumentType(parsedData.documentType),
+        classificationReason: hasManualClassification
+          ? `تصنيف يدوي (${normalizedManualType})${
+              parsedData.classificationReason ? `: ${String(parsedData.classificationReason)}` : ''
+            }`
+          : parsedData.classificationReason
+          ? String(parsedData.classificationReason)
+          : '',
         invoiceNumber: parsedData.invoiceNumber ? String(parsedData.invoiceNumber) : '',
         invoiceDate: parsedData.invoiceDate ? String(parsedData.invoiceDate).trim() : '',
         day: parsedData.day ? String(parsedData.day).trim() : '',
@@ -373,8 +402,9 @@ ${orgContext}
   // =========================================================================
   app.get('/api/supabase/status', async (_req, res) => {
     const status = await testSupabaseConnection();
-    res.status(status.configured ? 200 : 503).json({
-      success: status.connected,
+    const ready = Boolean(status.connected && status.bucketsReady);
+    res.status(ready ? 200 : 503).json({
+      success: ready,
       ...status,
     });
   });
@@ -504,12 +534,16 @@ ${orgContext}
       }
 
       // Delete dependent records explicitly in safe order (since schema uses ON DELETE RESTRICT on orgs)
-      await client.from('audit_logs').delete().eq('organization_id', id);
-      await client.from('export_batches').delete().eq('organization_id', id);
+      const { error: auditDelErr } = await client.from('audit_logs').delete().eq('organization_id', id);
+      if (auditDelErr) throw auditDelErr;
+      const { error: batchDelErr } = await client.from('export_batches').delete().eq('organization_id', id);
+      if (batchDelErr) throw batchDelErr;
       if (invIds.length > 0) {
-        await client.from('invoices').delete().in('id', invIds);
+        const { error: invDelErr } = await client.from('invoices').delete().in('id', invIds);
+        if (invDelErr) throw invDelErr;
       }
-      await client.from('custom_fields').delete().eq('organization_id', id);
+      const { error: cfDelErr } = await client.from('custom_fields').delete().eq('organization_id', id);
+      if (cfDelErr) throw cfDelErr;
       const { error } = await client.from('organizations').delete().eq('id', id);
       if (error) throw error;
 
@@ -530,7 +564,7 @@ ${orgContext}
       }
 
       // Ensure organization exists first
-      await client.from('organizations').upsert(
+      const { error: orgErr } = await client.from('organizations').upsert(
         {
           id: organization.id,
           name: organization.name,
@@ -539,6 +573,7 @@ ${orgContext}
         },
         { onConflict: 'id' }
       );
+      if (orgErr) throw orgErr;
 
       const safeDate =
         invoice.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(String(invoice.invoiceDate).trim())
@@ -583,7 +618,8 @@ ${orgContext}
       if (invErr) throw invErr;
 
       // Sync items idempotently
-      await client.from('invoice_items').delete().eq('invoice_id', invoice.id);
+      const { error: delItemsErr } = await client.from('invoice_items').delete().eq('invoice_id', invoice.id);
+      if (delItemsErr) throw delItemsErr;
       if (Array.isArray(invoice.items) && invoice.items.length > 0) {
         const itemsPayload = invoice.items.map((it: any) => ({
           id: it.id && UUID_REGEX.test(it.id) ? it.id : undefined,
@@ -601,24 +637,34 @@ ${orgContext}
         if (itemErr) throw itemErr;
       }
 
-      // Sync custom field values if matching custom_fields rows exist
+      // Sync custom field values if matching custom_fields rows exist (match by UUID or name)
       const customEntries = Object.entries(invoice.customFieldsValues || {});
-      if (customEntries.length > 0) {
-        const validFieldIds = (organization.customFields || [])
-          .map((cf: any) => cf.id)
-          .filter((id: string) => UUID_REGEX.test(id));
-        if (validFieldIds.length > 0) {
-          const rowsToUpsert = customEntries
-            .filter(([k]) => validFieldIds.includes(k))
-            .map(([custom_field_id, value]) => ({
-              invoice_id: invoice.id,
-              custom_field_id,
-              value: value ?? null,
-            }));
+      if (customEntries.length > 0 && Array.isArray(organization.customFields)) {
+        const orgFields = organization.customFields.filter((cf: any) => UUID_REGEX.test(cf?.id || ''));
+        if (orgFields.length > 0) {
+          const fieldByIdOrName = new Map<string, string>();
+          for (const cf of orgFields) {
+            fieldByIdOrName.set(cf.id, cf.id);
+            if (cf.name) fieldByIdOrName.set(cf.name, cf.id);
+          }
+
+          const rowsMap = new Map<string, { invoice_id: string; custom_field_id: string; value: any }>();
+          for (const [k, value] of customEntries) {
+            const resolvedFieldId = fieldByIdOrName.get(k);
+            if (resolvedFieldId) {
+              rowsMap.set(resolvedFieldId, {
+                invoice_id: invoice.id,
+                custom_field_id: resolvedFieldId,
+                value: value ?? null,
+              });
+            }
+          }
+          const rowsToUpsert = Array.from(rowsMap.values());
           if (rowsToUpsert.length > 0) {
-            await client
+            const { error: icvErr } = await client
               .from('invoice_custom_values')
               .upsert(rowsToUpsert, { onConflict: 'invoice_id,custom_field_id' });
+            if (icvErr) throw icvErr;
           }
         }
       }
