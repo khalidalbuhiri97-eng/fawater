@@ -14,9 +14,10 @@ import {
   Image as ImageIcon,
   Trash2,
 } from 'lucide-react';
-import { InvoiceRecord, Operation, DocumentType } from '../types';
+import { InvoiceRecord, Operation } from '../types';
 import { saveInvoiceImage } from '../services/dbService';
 import { generateUuid } from '../services/localStore';
+import { enqueueAiBackgroundBatch } from '../services/backgroundQueueClient';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -31,27 +32,7 @@ interface BatchUploadModalProps {
   operation: Operation;
   onUpdateOperation: (op: Operation) => void;
   onStartReview: (invoiceId: string) => void;
-}
-
-function toOptionalNum(val: any): number | undefined {
-  if (val === null || val === undefined || val === '') return undefined;
-  const num = Number(val);
-  return Number.isFinite(num) ? num : undefined;
-}
-
-async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 2): Promise<Response> {
-  let lastRes: Response | null = null;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await fetch(url, options);
-    lastRes = res;
-    if (res.status !== 429 && res.status !== 503) {
-      return res;
-    }
-    if (attempt < maxAttempts - 1) {
-      await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
-    }
-  }
-  return lastRes!;
+  onBackgroundBatchQueued?: (batchId: string) => void;
 }
 
 function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): InvoiceRecord {
@@ -84,26 +65,13 @@ function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): I
 
 type AiClassificationChoice = 'auto' | 'مبيعات' | 'مشتريات';
 
-interface AiBatchResult {
-  fileName: string;
-  invoiceId: string;
-  success: boolean;
-  documentType?: DocumentType;
-  classification?: AiClassificationChoice;
-  error?: string;
-  file?: File;
-  base64?: string;
-  mimeType?: string;
-  retrying?: boolean;
-}
-
 export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   isOpen,
   initialMode = 'ai',
   onClose,
   operation,
   onUpdateOperation,
-  onStartReview,
+  onBackgroundBatchQueued,
 }) => {
   const [mode, setMode] = useState<'ai' | 'manual'>(initialMode);
   const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
@@ -115,9 +83,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[]
   >([]);
   const [extracting, setExtracting] = useState(false);
-  const [progress, setProgress] = useState({ current: 0, total: 0, success: 0, failed: 0 });
-  const [aiResults, setAiResults] = useState<AiBatchResult[] | null>(null);
-  const [firstCreatedAiId, setFirstCreatedAiId] = useState<string | null>(null);
 
   // Manual mode state (persists across preview/field edits and type toggles)
   const [manualType, setManualType] = useState<'مبيعات' | 'مشتريات'>('مبيعات');
@@ -133,7 +98,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
       setMode(initialMode);
       setErrorMsg('');
       setManualSuccessMsg('');
-      setAiResults(null);
       getOfficialTemplate()
         .then((tpl) => {
           setTemplateSheets(tpl.sheets);
@@ -295,7 +259,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     if (!e.target.files) return;
     const files = Array.from(e.target.files);
     setErrorMsg('');
-    setAiResults(null);
 
     const newItems: { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[] = [];
     for (const file of files) {
@@ -320,304 +283,59 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
     setExtracting(true);
     setErrorMsg('');
-    setAiResults(null);
-    setProgress({ current: 0, total: selectedFiles.length, success: 0, failed: 0 });
-
-    let workingInvoices = [...(operation.invoices || [])];
-    let successCount = 0;
-    let failedCount = 0;
-    let firstId: string | null = null;
-    const batchResults: AiBatchResult[] = [];
-
-    for (let i = 0; i < selectedFiles.length; i++) {
-      setProgress((p) => ({ ...p, current: i + 1 }));
-      const item = selectedFiles[i];
-      const invId = generateUuid();
-      if (!firstId) firstId = invId;
-      const nowIso = new Date().toISOString();
-
-      try {
-        await saveInvoiceImage(invId, item.base64, item.mimeType, {
-          organizationId: operation.id,
-          fileName: item.file.name,
-          fileSize: item.file.size,
-          enqueueSync: true,
-        });
-      } catch (err) {
-        console.error('IndexedDB save image error:', err);
-      }
-
-      const newRecord: InvoiceRecord = {
-        id: invId,
-        organizationId: operation.id,
-        invoiceNumber: '',
-        invoiceDate: '',
-        documentType:
-          item.classification === 'مبيعات' || item.classification === 'مشتريات'
-            ? item.classification
-            : 'يحتاج تحديد النوع',
-        entryMethod: 'ai',
-        issuerName: '',
-        clientName: '',
-        issuerTaxId: '',
-        clientTaxId: '',
-        currency: '',
-        subtotal: undefined,
-        taxAmount: undefined,
-        taxRate: undefined,
-        discount: undefined,
-        grandTotal: undefined,
-        notes: '',
-        items: [],
-        customFieldsValues: {},
-        extraColumnsData: {},
-        status: 'قيد المعالجة',
-        hasImage: true,
-        imageBase64: item.base64,
-        imageMimeType: item.mimeType,
-        imageFileName: item.file.name,
-        imageFileSize: item.file.size,
-        syncStatus: 'pending',
-        createdAt: nowIso.split('T')[0],
-        updatedAt: nowIso,
-      };
-
-      try {
-        const res = await fetchWithRetry('/api/extract-invoice', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            invoiceId: invId,
-            imageBase64: item.base64,
-            mimeType: item.mimeType,
-            fileName: item.file.name,
-            customFields: operation.customFields,
-            organizationName: operation.name,
-            activityType: operation.activityType,
-            manualDocumentType: item.classification,
-          }),
-        });
-
-        const data = await res.json();
-        if (res.ok && data.success && data.data) {
-          const ext = data.data;
-          const classifiedType: DocumentType =
-            item.classification === 'مبيعات' || item.classification === 'مشتريات'
-              ? item.classification
-              : ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
-              ? ext.documentType
-              : 'يحتاج تحديد النوع';
-
-          newRecord.documentType = classifiedType;
-          newRecord.classificationReason = ext.classificationReason || '';
-          newRecord.invoiceNumber = ext.invoiceNumber || '';
-          newRecord.invoiceDate = ext.invoiceDate || '';
-          newRecord.day = ext.day || '';
-          newRecord.issuerName = ext.issuerName || '';
-          newRecord.clientName = ext.clientName || '';
-          newRecord.issuerTaxId = ext.issuerTaxId || '';
-          newRecord.clientTaxId = ext.clientTaxId || '';
-          newRecord.currency = ext.currency || '';
-          newRecord.subtotal = toOptionalNum(ext.subtotal);
-          newRecord.taxAmount = toOptionalNum(ext.taxAmount);
-          newRecord.taxRate = toOptionalNum(ext.taxRate);
-          newRecord.discount = toOptionalNum(ext.discount);
-          newRecord.grandTotal = toOptionalNum(ext.grandTotal);
-          newRecord.cashSales = toOptionalNum(ext.cashSales);
-          newRecord.networkSales = toOptionalNum(ext.networkSales);
-          newRecord.notes = ext.notes || '';
-          newRecord.items = Array.isArray(ext.items)
-            ? ext.items.map((it: any) => ({
-                id: generateUuid(),
-                name: String(it?.name || ''),
-                code: it?.code ? String(it.code) : undefined,
-                quantity: toOptionalNum(it?.quantity),
-                unit: it?.unit ? String(it.unit) : undefined,
-                unitPrice: toOptionalNum(it?.unitPrice),
-                discount: toOptionalNum(it?.discount),
-                tax: toOptionalNum(it?.tax),
-                total: toOptionalNum(it?.total),
-              }))
-            : [];
-          newRecord.customFieldsValues =
-            ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
-              ? ext.customFieldsExtracted
-              : {};
-          newRecord.status = 'تحتاج مراجعة';
-          successCount++;
-          batchResults.push({
-            fileName: item.file.name,
-            invoiceId: invId,
-            success: true,
-            documentType: classifiedType,
-            classification: item.classification,
-          });
-        } else {
-          const errText = data?.error || `فشل الاستخراج الذكي (رمز ${res.status})`;
-          newRecord.status = 'فشل';
-          newRecord.errorMessage = errText;
-          failedCount++;
-          batchResults.push({
-            fileName: item.file.name,
-            invoiceId: invId,
-            success: false,
-            classification: item.classification,
-            error: errText,
-            file: item.file,
-            base64: item.base64,
-            mimeType: item.mimeType,
-          });
-        }
-      } catch (err: any) {
-        const errText = err?.message || 'خطأ في الاتصال بالخادم';
-        newRecord.status = 'فشل';
-        newRecord.errorMessage = errText;
-        failedCount++;
-        batchResults.push({
-          fileName: item.file.name,
-          invoiceId: invId,
-          success: false,
-          classification: item.classification,
-          error: errText,
-          file: item.file,
-          base64: item.base64,
-          mimeType: item.mimeType,
-        });
-      }
-
-      workingInvoices = [newRecord, ...workingInvoices];
-      onUpdateOperation({
-        ...operation,
-        invoices: workingInvoices,
-        updatedAt: nowIso,
-      });
-
-      setProgress((p) => ({ ...p, success: successCount, failed: failedCount }));
-      if (i < selectedFiles.length - 1) {
-        await new Promise((r) => setTimeout(r, 350));
-      }
-    }
-
-    setExtracting(false);
-    setSelectedFiles([]);
-    setFirstCreatedAiId(firstId);
-
-    if (failedCount === 0 && firstId) {
-      onClose();
-      onStartReview(firstId);
-    } else {
-      setAiResults(batchResults);
-    }
-  };
-
-  const handleRetryFailedAiItem = async (targetResult: AiBatchResult) => {
-    if (!targetResult.base64) return;
-    setAiResults((prev) =>
-      prev ? prev.map((r) => (r.invoiceId === targetResult.invoiceId ? { ...r, retrying: true } : r)) : null
-    );
 
     try {
-      const res = await fetchWithRetry('/api/extract-invoice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          invoiceId: targetResult.invoiceId,
-          imageBase64: targetResult.base64,
-          mimeType: targetResult.mimeType || 'image/jpeg',
-          fileName: targetResult.fileName,
-          customFields: operation.customFields,
-          organizationName: operation.name,
-          activityType: operation.activityType,
-          manualDocumentType: targetResult.classification || 'auto',
-        }),
-      });
-      const data = await res.json();
-      const nowIso = new Date().toISOString();
+      const preparedFiles: Array<{
+        invoiceId: string;
+        imageBase64: string;
+        mimeType: string;
+        fileName: string;
+        fileSize: number;
+        manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
+      }> = [];
 
-      if (res.ok && data.success && data.data) {
-        const ext = data.data;
-        const classifiedType: DocumentType =
-          targetResult.classification === 'مبيعات' || targetResult.classification === 'مشتريات'
-            ? targetResult.classification
-            : ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
-            ? ext.documentType
-            : 'يحتاج تحديد النوع';
+      for (const item of selectedFiles) {
+        const invId = generateUuid();
+        try {
+          await saveInvoiceImage(invId, item.base64, item.mimeType, {
+            organizationId: operation.id,
+            fileName: item.file.name,
+            fileSize: item.file.size,
+            enqueueSync: false,
+          });
+        } catch (err) {
+          console.error('IndexedDB save image error:', err);
+        }
 
-        const updatedInvoices = (operation.invoices || []).map((inv) => {
-          if (inv.id !== targetResult.invoiceId) return inv;
-          return {
-            ...inv,
-            documentType: classifiedType,
-            classificationReason: ext.classificationReason || '',
-            invoiceNumber: ext.invoiceNumber || '',
-            invoiceDate: ext.invoiceDate || '',
-            day: ext.day || '',
-            issuerName: ext.issuerName || '',
-            clientName: ext.clientName || '',
-            issuerTaxId: ext.issuerTaxId || '',
-            clientTaxId: ext.clientTaxId || '',
-            currency: ext.currency || '',
-            subtotal: toOptionalNum(ext.subtotal),
-            taxAmount: toOptionalNum(ext.taxAmount),
-            taxRate: toOptionalNum(ext.taxRate),
-            discount: toOptionalNum(ext.discount),
-            grandTotal: toOptionalNum(ext.grandTotal),
-            cashSales: toOptionalNum(ext.cashSales),
-            networkSales: toOptionalNum(ext.networkSales),
-            notes: ext.notes || '',
-            items: Array.isArray(ext.items)
-              ? ext.items.map((it: any) => ({
-                  id: generateUuid(),
-                  name: String(it?.name || ''),
-                  code: it?.code ? String(it.code) : undefined,
-                  quantity: toOptionalNum(it?.quantity),
-                  unit: it?.unit ? String(it.unit) : undefined,
-                  unitPrice: toOptionalNum(it?.unitPrice),
-                  discount: toOptionalNum(it?.discount),
-                  tax: toOptionalNum(it?.tax),
-                  total: toOptionalNum(it?.total),
-                }))
-              : [],
-            customFieldsValues:
-              ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
-                ? ext.customFieldsExtracted
-                : {},
-            status: 'تحتاج مراجعة' as const,
-            errorMessage: undefined,
-            updatedAt: nowIso,
-          };
+        preparedFiles.push({
+          invoiceId: invId,
+          imageBase64: item.base64,
+          mimeType: item.mimeType,
+          fileName: item.file.name,
+          fileSize: item.file.size,
+          manualDocumentType: item.classification,
         });
-
-        onUpdateOperation({ ...operation, invoices: updatedInvoices, updatedAt: nowIso });
-        setAiResults((prev) =>
-          prev
-            ? prev.map((r) =>
-                r.invoiceId === targetResult.invoiceId
-                  ? { ...r, success: true, documentType: classifiedType, error: undefined, retrying: false }
-                  : r
-              )
-            : null
-        );
-      } else {
-        const errText = data?.error || `فشل إعادة المحاولة (رمز ${res.status})`;
-        setAiResults((prev) =>
-          prev
-            ? prev.map((r) =>
-                r.invoiceId === targetResult.invoiceId ? { ...r, retrying: false, error: errText } : r
-              )
-            : null
-        );
       }
+
+      const queued = await enqueueAiBackgroundBatch({
+        organization: operation,
+        files: preparedFiles,
+      });
+
+      const nowIso = new Date().toISOString();
+      onUpdateOperation({
+        ...operation,
+        invoices: [...queued.initialInvoices, ...(operation.invoices || [])],
+        updatedAt: nowIso,
+      });
+
+      setSelectedFiles([]);
+      onBackgroundBatchQueued?.(queued.batchId);
+      onClose();
     } catch (err: any) {
-      setAiResults((prev) =>
-        prev
-          ? prev.map((r) =>
-              r.invoiceId === targetResult.invoiceId
-                ? { ...r, retrying: false, error: err?.message || 'فشل الاتصال بالخادم' }
-                : r
-            )
-          : null
-      );
+      setErrorMsg(err?.message || 'تعذر بدء المعالجة في الخلفية.');
+    } finally {
+      setExtracting(false);
     }
   };
 
@@ -656,7 +374,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 onClick={() => {
                   setMode('manual');
                   setErrorMsg('');
-                  setAiResults(null);
                 }}
                 className={`p-3 rounded-2xl border text-right transition flex items-center gap-3 ${
                   mode === 'manual'
@@ -938,76 +655,21 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               </div>
             </div>
           ) : extracting ? (
-            /* ==================== AI PROGRESS ==================== */
+            /* ==================== AI QUEUING ==================== */
             <div className="py-12 text-center space-y-4">
               <Loader2 className="w-12 h-12 text-emerald-600 animate-spin mx-auto" />
               <div>
                 <h4 className="font-bold text-slate-800 text-lg mb-1">
-                  جاري قراءة الفواتير وتصنيفها بالذكاء الاصطناعي...
+                  جاري رفع الفواتير وجدولتها للمعالجة في الخلفية...
                 </h4>
                 <p className="text-sm text-slate-500">
-                  تمت معالجة {progress.current} من أصل {progress.total} ملفات (نجح: {progress.success} • فشل:{' '}
-                  {progress.failed})
+                  يتم حفظ الفواتير على الخادم لمتابعة تحليلها بواسطة Gemini حتى لو انتقلت لصفحة أخرى أو أغلقت المتصفح.
                 </p>
-              </div>
-              <div className="w-full bg-slate-100 rounded-full h-3 max-w-md mx-auto overflow-hidden">
-                <div
-                  className="bg-emerald-600 h-full transition-all duration-300"
-                  style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }}
-                ></div>
               </div>
             </div>
           ) : (
-            /* ==================== AI UPLOAD & REAL RESULTS ==================== */
+            /* ==================== AI UPLOAD ==================== */
             <div className="space-y-5">
-              {aiResults && (
-                <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 space-y-2.5">
-                  <h4 className="text-xs font-bold text-slate-900">نتائج الاستخراج بالذكاء الاصطناعي:</h4>
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {aiResults.map((r, idx) => (
-                      <div
-                        key={idx}
-                        className={`p-3 rounded-xl border text-xs flex items-start justify-between gap-3 ${
-                          r.success
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                            : 'bg-red-50 border-red-200 text-red-900'
-                        }`}
-                      >
-                        <div className="space-y-0.5">
-                          <div className="font-bold">{r.fileName}</div>
-                          {r.success ? (
-                            <div className="text-[11px]">التصنيف المقترح: {r.documentType}</div>
-                          ) : (
-                            <div className="text-[11px] font-medium">{r.error}</div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {!r.success && r.base64 && (
-                            <button
-                              type="button"
-                              disabled={r.retrying}
-                              onClick={() => handleRetryFailedAiItem(r)}
-                              className="px-3 py-1 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-[11px] font-bold"
-                            >
-                              {r.retrying ? 'جاري الإعادة...' : 'إعادة المحاولة'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onClose();
-                              onStartReview(r.invoiceId);
-                            }}
-                            className="px-3 py-1 bg-white border border-slate-300 rounded-lg text-[11px] font-bold text-slate-800 hover:bg-slate-100"
-                          >
-                            مراجعة / تعديل
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               {/* Manual / Auto Classification Selector for AI */}
               <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/80 space-y-2.5">
@@ -1147,29 +809,15 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <span>{savingManual ? 'جاري الحفظ...' : 'حفظ الفاتورة وتجهيزها لـ Excel'}</span>
               </button>
             ) : (
-              <>
-                {firstCreatedAiId && aiResults && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onStartReview(firstCreatedAiId);
-                    }}
-                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-bold"
-                  >
-                    الانتقال لشاشة المراجعة
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={selectedFiles.length === 0}
-                  onClick={handleStartAiExtraction}
-                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>بدء الاستخراج والتصنيف ({selectedFiles.length})</span>
-                </button>
-              </>
+              <button
+                type="button"
+                disabled={selectedFiles.length === 0}
+                onClick={handleStartAiExtraction}
+                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>بدء المعالجة في الخلفية ({selectedFiles.length})</span>
+              </button>
             )}
           </div>
         )}

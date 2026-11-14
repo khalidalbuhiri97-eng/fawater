@@ -455,7 +455,9 @@ export async function saveOperation(op: Operation): Promise<Operation> {
 
   for (const [invId, inv] of nextInvMap) {
     const oldInv = prevInvMap.get(invId);
-    if (!oldInv || JSON.stringify(oldInv) !== JSON.stringify(inv)) {
+    const managedByServerQueue =
+      inv.processingStatus === 'pending' || inv.processingStatus === 'processing';
+    if (!managedByServerQueue && (!oldInv || JSON.stringify(oldInv) !== JSON.stringify(inv))) {
       const invWithPending = { ...inv, syncStatus: 'pending' as const };
       // Persist pending syncStatus on invoice
       const idx = sanitized.invoices.findIndex((x) => x.id === invId);

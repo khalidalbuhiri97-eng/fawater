@@ -554,10 +554,19 @@ export async function downloadSavedExportBatch(batchId: string, fallbackFileName
   }
 
   const res = await fetch(`/api/supabase/exports/${encodeURIComponent(batchId)}/download`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'تعذر تنزيل ملف هذه الدفعة محلياً أو من التخزين السحابي.');
+  if (res.ok) {
+    const blob = await res.blob();
+    triggerBrowserDownload(blob, fallbackFileName || 'fawater_export.xlsx');
+    return;
   }
-  const blob = await res.blob();
-  triggerBrowserDownload(blob, fallbackFileName || 'fawater_export.xlsx');
+
+  const bgRes = await fetch(`/api/background/exports/${encodeURIComponent(batchId)}/download`);
+  if (bgRes.ok) {
+    const blob = await bgRes.blob();
+    triggerBrowserDownload(blob, fallbackFileName || 'fawater_export.xlsx');
+    return;
+  }
+
+  const data = await res.json().catch(() => ({}));
+  throw new Error(data.error || 'تعذر تنزيل ملف هذه الدفعة محلياً أو من الخادم.');
 }

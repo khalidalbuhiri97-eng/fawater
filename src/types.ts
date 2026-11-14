@@ -15,6 +15,8 @@ export type DocumentType =
 
 export type InvoiceStatus = 'لم تبدأ' | 'قيد المعالجة' | 'تحتاج مراجعة' | 'مكتملة' | 'فشل';
 
+export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
 export type SyncStatus = 'pending' | 'syncing' | 'synced' | 'failed';
 
 export type FieldType = 'نص' | 'رقم' | 'تاريخ' | 'مبلغ' | 'نسبة' | 'قائمة خيارات' | 'نعم/لا';
@@ -65,6 +67,7 @@ export interface InvoiceRecord {
   customFieldsValues: Record<string, any>;
   extraColumnsData?: Record<string, Record<string, string | number | undefined>>;
   status: InvoiceStatus;
+  processingStatus?: ProcessingStatus;
   hasImage?: boolean;
   storagePath?: string; // private path in Supabase Storage bucket invoice-images
   imageBase64?: string; // hydrated from IndexedDB in memory; never stored in localStorage
@@ -144,3 +147,63 @@ export interface SyncOverview {
   lastSyncAt?: string;
   lastError?: string;
 }
+
+export interface BackgroundBatchItemSummary {
+  invoiceId: string;
+  fileName: string;
+  manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
+  status: ProcessingStatus;
+  errorMessage?: string;
+  updatedAt: string;
+  invoiceRecord?: InvoiceRecord;
+}
+
+export interface BackgroundBatchSummary {
+  batchId: string;
+  organizationId: string;
+  organizationName: string;
+  status: 'pending' | 'processing' | 'completed' | 'partial_failed' | 'failed';
+  counts: {
+    total: number;
+    pending: number;
+    processing: number;
+    completed: number;
+    failed: number;
+    remaining: number;
+  };
+  supabaseSynced: boolean;
+  supabaseWarning?: string;
+  dismissed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  items: BackgroundBatchItemSummary[];
+}
+
+export interface BackgroundExportJobSummary {
+  jobId: string;
+  batchId: string;
+  organizationId: string;
+  organizationName: string;
+  fileName: string;
+  status: ProcessingStatus;
+  exportedCount: number;
+  salesCount: number;
+  purchasesCount: number;
+  templateSha256?: string;
+  entries: ExportTrackingEntry[];
+  errorMessage?: string;
+  supabaseSynced: boolean;
+  supabaseWarning?: string;
+  dismissed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackgroundQueueStatus {
+  aiBatches: BackgroundBatchSummary[];
+  exportJobs: BackgroundExportJobSummary[];
+  activeAiCount: number;
+  activeExportCount: number;
+  hasActiveJobs: boolean;
+}
+

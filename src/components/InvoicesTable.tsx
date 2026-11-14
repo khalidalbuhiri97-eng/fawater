@@ -154,16 +154,30 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
                     <td className="p-4">
                       <div className="flex flex-col gap-1 items-start">
                         <span
+                          title={inv.errorMessage || undefined}
                           className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
                             inv.status === 'مكتملة'
                               ? 'bg-emerald-100 text-emerald-800'
-                              : inv.status === 'فشل'
+                              : inv.status === 'فشل' || inv.processingStatus === 'failed'
                               ? 'bg-red-100 text-red-800'
+                              : inv.status === 'قيد المعالجة' || inv.processingStatus === 'processing'
+                              ? 'bg-blue-100 text-blue-800 animate-pulse'
+                              : inv.status === 'لم تبدأ' || inv.processingStatus === 'pending'
+                              ? 'bg-slate-200 text-slate-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
-                          {inv.status}
+                          {inv.status === 'لم تبدأ'
+                            ? 'بانتظار المعالجة'
+                            : inv.status === 'قيد المعالجة'
+                            ? 'جاري الاستخراج...'
+                            : inv.status}
                         </span>
+                        {inv.errorMessage && inv.status === 'فشل' && (
+                          <span className="text-[10px] text-red-600 max-w-[160px] truncate" title={inv.errorMessage}>
+                            {inv.errorMessage}
+                          </span>
+                        )}
                         {inv.syncStatus && inv.syncStatus !== 'synced' && (
                           <span className="text-[10px] text-slate-500">
                             {inv.syncStatus === 'failed'

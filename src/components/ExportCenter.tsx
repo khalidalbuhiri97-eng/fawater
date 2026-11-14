@@ -9,12 +9,16 @@ import {
   History,
   Layers,
 } from 'lucide-react';
-import { ExportTrackingRecord, Operation } from '../types';
+import { BackgroundExportJobSummary, ExportTrackingRecord, Operation } from '../types';
 import {
-  downloadOperationExcel,
   downloadSavedExportBatch,
   getOperationExportSummary,
 } from '../services/excelService';
+import {
+  downloadBackgroundExportFile,
+  enqueueBackgroundExcelExport,
+  fetchBackgroundQueueStatus,
+} from '../services/backgroundQueueClient';
 import {
   checkForTemplateUpdate,
   getOfficialTemplate,
@@ -26,28 +30,40 @@ import { getTemplateVersionHistory, TemplateVersionHistoryItem } from '../servic
 
 interface ExportCenterProps {
   operation: Operation;
+  onBackgroundExportQueued?: (jobId: string) => void;
 }
 
-export const ExportCenter: React.FC<ExportCenterProps> = ({ operation }) => {
+export const ExportCenter: React.FC<ExportCenterProps> = ({
+  operation,
+  onBackgroundExportQueued,
+}) => {
   const [updating, setUpdating] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadingBatchId, setDownloadingBatchId] = useState<string | null>(null);
   const [templateInfo, setTemplateInfo] = useState<StoredOfficialTemplate | null>(null);
   const [templateHistory, setTemplateHistory] = useState<TemplateVersionHistoryItem[]>([]);
   const [exportTracking, setExportTracking] = useState<ExportTrackingRecord | null>(null);
+  const [activeOrgExportJob, setActiveOrgExportJob] = useState<BackgroundExportJobSummary | null>(null);
   const [exportMsg, setExportMsg] = useState<{ success: boolean; text: string } | null>(null);
   const [updateMsg, setUpdateMsg] = useState<{ success: boolean; text: string } | null>(null);
 
   const loadExportData = async () => {
     try {
-      const [tpl, history, tracking] = await Promise.all([
+      const [tpl, history, tracking, bgStatus] = await Promise.all([
         getOfficialTemplate().catch(() => null),
         getTemplateVersionHistory().catch(() => []),
         getExportTracking(operation.id).catch(() => null),
+        fetchBackgroundQueueStatus(operation.id).catch(() => null),
       ]);
       if (tpl) setTemplateInfo(tpl);
       setTemplateHistory(history);
       setExportTracking(tracking);
+      if (bgStatus?.exportJobs?.length) {
+        const latest = bgStatus.exportJobs.find((j) => !j.dismissed) || bgStatus.exportJobs[0];
+        setActiveOrgExportJob(latest || null);
+      } else {
+        setActiveOrgExportJob(null);
+      }
     } catch {
       // ignore
     }
@@ -57,6 +73,19 @@ export const ExportCenter: React.FC<ExportCenterProps> = ({ operation }) => {
     loadExportData();
   }, [operation.id, operation.updatedAt, operation.invoices?.length]);
 
+  useEffect(() => {
+    if (
+      !activeOrgExportJob ||
+      (activeOrgExportJob.status !== 'pending' && activeOrgExportJob.status !== 'processing')
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      loadExportData();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeOrgExportJob?.jobId, activeOrgExportJob?.status, operation.id]);
+
   const summary = getOperationExportSummary(operation, exportTracking);
   const exportableCount = summary.newReadyInvoices.length + summary.modifiedReadyInvoices.length;
 
@@ -64,18 +93,21 @@ export const ExportCenter: React.FC<ExportCenterProps> = ({ operation }) => {
     setDownloading(true);
     setExportMsg(null);
     try {
-      const result = await downloadOperationExcel(operation);
+      const alreadyIds = summary.alreadyExportedUnchangedInvoices.map((i) => i.id);
+      const queued = await enqueueBackgroundExcelExport({
+        organization: operation,
+        alreadyExportedIds: alreadyIds,
+      });
+      onBackgroundExportQueued?.(queued.jobId);
       await loadExportData();
       setExportMsg({
         success: true,
-        text: `تم إنشاء وتنزيل الدفعة "${result.fileName}" بنجاح (${result.salesWritten} مبيعات، ${result.purchasesWritten} مشتريات${
-          result.modifiedIncluded > 0 ? ` • تتضمن ${result.modifiedIncluded} فاتورة معدّلة` : ''
-        }).`,
+        text: `تم إرسال مهمة التصدير "${queued.fileName}" إلى طابور الخلفية بنجاح (مع قفل الحماية على مستوى المؤسسة). يمكنك متابعة العمل في أي صفحة أخرى وسيظهر الملف فور جاهزيته.`,
       });
     } catch (err: any) {
       setExportMsg({
         success: false,
-        text: err?.message || 'فشل تصدير ملف Excel.',
+        text: err?.message || 'فشل جدولة تصدير ملف Excel في الخلفية.',
       });
     } finally {
       setDownloading(false);
@@ -158,19 +190,54 @@ export const ExportCenter: React.FC<ExportCenterProps> = ({ operation }) => {
         <div className="flex flex-col sm:flex-row items-center gap-4 pt-1">
           <button
             onClick={handleDownloadNewBatch}
-            disabled={downloading || exportableCount === 0}
+            disabled={
+              downloading ||
+              exportableCount === 0 ||
+              activeOrgExportJob?.status === 'pending' ||
+              activeOrgExportJob?.status === 'processing'
+            }
             className="w-full sm:w-auto px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-2xl font-bold text-sm shadow-md transition flex items-center justify-center gap-2"
           >
             <Download className="w-5 h-5" />
             <span>
               {downloading
-                ? 'جاري تجهيز ملف Excel...'
+                ? 'جاري إرسال المهمة للخلفية...'
+                : activeOrgExportJob?.status === 'pending' || activeOrgExportJob?.status === 'processing'
+                ? 'جاري تجهيز ملف Excel في الخلفية...'
                 : exportableCount === 0
                 ? 'لا توجد فواتير جديدة للتصدير (الكل مصدّر)'
-                : `تصدير وتنزيل دفعة Excel (${exportableCount} فاتورة)`}
+                : `بدء التصدير في الخلفية (${exportableCount} فاتورة)`}
             </span>
           </button>
+
+          {activeOrgExportJob && activeOrgExportJob.status === 'completed' && (
+            <button
+              type="button"
+              onClick={() =>
+                downloadBackgroundExportFile(activeOrgExportJob.jobId, activeOrgExportJob.fileName)
+              }
+              className="w-full sm:w-auto px-5 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm shadow-md transition flex items-center justify-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              <span>تنزيل آخر ملف جاهز ({activeOrgExportJob.fileName})</span>
+            </button>
+          )}
         </div>
+
+        {activeOrgExportJob && (activeOrgExportJob.status === 'pending' || activeOrgExportJob.status === 'processing') && (
+          <div className="p-3.5 rounded-xl text-xs font-medium bg-blue-50 text-blue-900 border border-blue-200 flex items-center justify-between gap-2">
+            <span>
+              جاري تنفيذ تصدير "{activeOrgExportJob.fileName}" في الخلفية (طابور مستقل مع قفل حماية المؤسسة)...
+            </span>
+          </div>
+        )}
+
+        {activeOrgExportJob && activeOrgExportJob.status === 'failed' && activeOrgExportJob.errorMessage && (
+          <div className="p-3.5 rounded-xl text-xs font-medium bg-red-50 text-red-800 border border-red-200 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>فشل آخر تصدير في الخلفية: {activeOrgExportJob.errorMessage}</span>
+          </div>
+        )}
 
         {exportMsg && (
           <div

@@ -1,31 +1,91 @@
-import React, { useState, useEffect } from 'react';
-import { Operation, SyncOverview } from './types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { BackgroundQueueStatus, Operation, SyncOverview } from './types';
 import {
   initializeDatabase,
   getOperations,
   saveOperation,
   deleteOperationConfirmed,
   hydrateOperationImages,
+  getExportTracking,
 } from './services/dbService';
-import { downloadOperationExcel } from './services/excelService';
+import { getOperationExportSummary } from './services/excelService';
 import { getOfficialTemplate } from './services/templateService';
 import { getSyncOverview, subscribeSyncStatus, syncAllPending } from './services/syncService';
+import {
+  dismissBackgroundJob,
+  downloadBackgroundExportFile,
+  enqueueBackgroundExcelExport,
+  fetchBackgroundQueueStatus,
+  mergeBackgroundResultsIntoLocalStore,
+  retryBackgroundAiBatch,
+} from './services/backgroundQueueClient';
 import { Navbar } from './components/Navbar';
 import { OperationsList } from './components/OperationsList';
 import { NewOperationModal } from './components/NewOperationModal';
 import { OperationDashboard } from './components/OperationDashboard';
 import { ReviewWorkspace } from './components/ReviewWorkspace';
-import { AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+  X,
+} from 'lucide-react';
 
 export default function App() {
   const [operations, setOperations] = useState<Operation[]>([]);
   const [initializing, setInitializing] = useState(true);
   const [syncOverview, setSyncOverview] = useState<SyncOverview | undefined>(undefined);
+  const [bgStatus, setBgStatus] = useState<BackgroundQueueStatus | null>(null);
+  const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'home' | 'dashboard' | 'review'>('home');
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
   const [banner, setBanner] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  const sessionExportJobsRef = useRef<Set<string>>(new Set());
+  const autoDownloadedJobsRef = useRef<Set<string>>(new Set());
+  const activeOpIdRef = useRef<string | null>(null);
+  activeOpIdRef.current = activeOperationId;
+
+  const pollBackgroundStatus = useCallback(async () => {
+    const status = await fetchBackgroundQueueStatus();
+    if (!status) return;
+    setBgStatus(status);
+
+    const changed = await mergeBackgroundResultsIntoLocalStore(status);
+    if (changed) {
+      let freshOps = await getOperations();
+      if (activeOpIdRef.current) {
+        const target = freshOps.find((o) => o.id === activeOpIdRef.current);
+        if (target) {
+          const hydrated = await hydrateOperationImages(target).catch(() => target);
+          freshOps = freshOps.map((o) => (o.id === hydrated.id ? hydrated : o));
+        }
+      }
+      setOperations(freshOps);
+    }
+
+    // Auto-download Excel files triggered by the user in this browser session once finished
+    for (const job of status.exportJobs) {
+      if (
+        job.status === 'completed' &&
+        sessionExportJobsRef.current.has(job.jobId) &&
+        !autoDownloadedJobsRef.current.has(job.jobId)
+      ) {
+        autoDownloadedJobsRef.current.add(job.jobId);
+        downloadBackgroundExportFile(job.jobId, job.fileName).catch(() => {});
+        setBanner({
+          type: 'success',
+          text: `اكتمل تجهيز ملف Excel "${job.fileName}" في الخلفية (${job.exportedCount} فاتورة) وبدأ تنزيله.`,
+        });
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const unsubscribe = subscribeSyncStatus((overview) => {
@@ -33,8 +93,9 @@ export default function App() {
     });
 
     initializeDatabase()
-      .then((ops) => {
+      .then(async (ops) => {
         setOperations(ops);
+        await pollBackgroundStatus();
       })
       .catch((err: any) => {
         setBanner({ type: 'error', text: err?.message || 'تعذر تحميل البيانات من IndexedDB' });
@@ -51,7 +112,15 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [pollBackgroundStatus]);
+
+  useEffect(() => {
+    if (!bgStatus?.hasActiveJobs) return;
+    const interval = window.setInterval(() => {
+      void pollBackgroundStatus();
+    }, 2500);
+    return () => window.clearInterval(interval);
+  }, [bgStatus?.hasActiveJobs, pollBackgroundStatus]);
 
   const handleManualSync = async () => {
     const res = await syncAllPending();
@@ -137,19 +206,67 @@ export default function App() {
     if (!activeOperation) return;
     setBanner(null);
     try {
-      const result = await downloadOperationExcel(activeOperation);
-      setOperations(await getOperations());
+      const tracking = await getExportTracking(activeOperation.id);
+      const summary = getOperationExportSummary(activeOperation, tracking);
+      if (summary.newReadyInvoices.length + summary.modifiedReadyInvoices.length === 0) {
+        throw new Error(
+          'لا توجد فواتير معتمدة ومؤرخة جديدة للتصدير حالياً (أو تم تصدير جميع الفواتير الجاهزة مسبقاً).'
+        );
+      }
+      const alreadyIds = summary.alreadyExportedUnchangedInvoices.map((i) => i.id);
+      const queued = await enqueueBackgroundExcelExport({
+        organization: activeOperation,
+        alreadyExportedIds: alreadyIds,
+      });
+      sessionExportJobsRef.current.add(queued.jobId);
       setBanner({
         type: 'success',
-        text: `تم تصدير "${result.fileName}" بنجاح (${result.salesWritten} مبيعات، ${result.purchasesWritten} مشتريات).`,
+        text: `بدأت مهمة تصدير "${queued.fileName}" في الخلفية وسيتم تنزيل الملف تلقائياً فور انتهائه.`,
       });
+      await pollBackgroundStatus();
     } catch (err: any) {
       setBanner({
         type: 'error',
-        text: err?.message || 'تعذر تصدير ملف Excel.',
+        text: err?.message || 'تعذر بدء تصدير ملف Excel في الخلفية.',
       });
     }
   };
+
+  const handleRetryBatch = async (batchId: string) => {
+    setRetryingBatchId(batchId);
+    try {
+      await retryBackgroundAiBatch(batchId);
+      await pollBackgroundStatus();
+    } catch (err: any) {
+      setBanner({ type: 'error', text: err?.message || 'تعذر إعادة المحاولة.' });
+    } finally {
+      setRetryingBatchId(null);
+    }
+  };
+
+  const handleDismissBackgroundJob = async (id: string) => {
+    await dismissBackgroundJob(id);
+    await pollBackgroundStatus();
+  };
+
+  const handleOpenBatchReview = async (organizationId: string, invoiceId?: string) => {
+    const targetOp = operations.find((o) => o.id === organizationId);
+    if (!targetOp) return;
+    setActiveOperationId(targetOp.id);
+    const hydrated = await hydrateOperationImages(targetOp).catch(() => targetOp);
+    setOperations((prev) => prev.map((o) => (o.id === hydrated.id ? hydrated : o)));
+
+    const firstId = invoiceId || hydrated.invoices?.[0]?.id;
+    if (firstId) {
+      setActiveInvoiceId(firstId);
+      setCurrentView('review');
+    } else {
+      setCurrentView('dashboard');
+    }
+  };
+
+  const visibleAiBatches = (bgStatus?.aiBatches || []).filter((b) => !b.dismissed);
+  const visibleExportJobs = (bgStatus?.exportJobs || []).filter((j) => !j.dismissed);
 
   return (
     <div
@@ -192,6 +309,147 @@ export default function App() {
         </div>
       )}
 
+      {/* Background Queues Progress Bar (persists across pages & reloads) */}
+      {(visibleAiBatches.length > 0 || visibleExportJobs.length > 0) && (
+        <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pt-4 space-y-2.5">
+          {visibleAiBatches.map((batch) => {
+            const done = batch.counts.completed + batch.counts.failed;
+            const pct = Math.round((done / Math.max(batch.counts.total, 1)) * 100);
+            const isRunning = batch.counts.remaining > 0;
+            const firstCompletedItem = batch.items.find((it) => it.status === 'completed');
+
+            return (
+              <div
+                key={batch.batchId}
+                className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 sm:p-4 space-y-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    {isRunning ? (
+                      <Loader2 className="w-4 h-4 text-emerald-600 animate-spin shrink-0" />
+                    ) : batch.counts.failed > 0 ? (
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    ) : (
+                      <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                    )}
+                    <span className="font-bold text-slate-900">
+                      معالجة الخلفية ({batch.organizationName})
+                    </span>
+                    <span className="text-slate-600">
+                      مكتملة: <strong className="text-emerald-700">{batch.counts.completed}</strong> •
+                      متبقية: <strong className="text-blue-700">{batch.counts.remaining}</strong> •
+                      فاشلة: <strong className="text-red-600">{batch.counts.failed}</strong> من{' '}
+                      {batch.counts.total}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {firstCompletedItem && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleOpenBatchReview(batch.organizationId, firstCompletedItem.invoiceId)
+                        }
+                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold transition"
+                      >
+                        مراجعة المكتملة
+                      </button>
+                    )}
+                    {batch.counts.failed > 0 && !isRunning && (
+                      <button
+                        type="button"
+                        disabled={retryingBatchId === batch.batchId}
+                        onClick={() => handleRetryBatch(batch.batchId)}
+                        className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl font-bold flex items-center gap-1 transition disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${
+                            retryingBatchId === batch.batchId ? 'animate-spin' : ''
+                          }`}
+                        />
+                        <span>إعادة محاولة الفاشلة ({batch.counts.failed})</span>
+                      </button>
+                    )}
+                    {!isRunning && (
+                      <button
+                        type="button"
+                        onClick={() => handleDismissBackgroundJob(batch.batchId)}
+                        className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100"
+                        title="إخفاء"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      batch.counts.failed > 0 && !isRunning ? 'bg-amber-500' : 'bg-emerald-600'
+                    }`}
+                    style={{ width: `${Math.max(pct, isRunning ? 6 : 0)}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+
+          {visibleExportJobs.map((job) => {
+            const isRunning = job.status === 'pending' || job.status === 'processing';
+            return (
+              <div
+                key={job.jobId}
+                className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs"
+              >
+                <div className="flex items-center gap-2.5">
+                  {isRunning ? (
+                    <Loader2 className="w-4 h-4 text-emerald-600 animate-spin shrink-0" />
+                  ) : job.status === 'failed' ? (
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                  ) : (
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+                  )}
+                  <span className="font-bold text-slate-900">
+                    طابور تصدير Excel ({job.organizationName}):
+                  </span>
+                  <span className="text-slate-600">
+                    {isRunning
+                      ? `جاري تجهيز "${job.fileName}" في الخلفية...`
+                      : job.status === 'completed'
+                      ? `اكتمل "${job.fileName}" (${job.exportedCount} فاتورة)`
+                      : job.errorMessage || 'تعذر إتمام التصدير'}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {job.status === 'completed' && (
+                    <button
+                      type="button"
+                      onClick={() => downloadBackgroundExportFile(job.jobId, job.fileName)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold flex items-center gap-1.5 transition"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>تنزيل Excel</span>
+                    </button>
+                  )}
+                  {!isRunning && (
+                    <button
+                      type="button"
+                      onClick={() => handleDismissBackgroundJob(job.jobId)}
+                      className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100"
+                      title="إخفاء"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <main className="flex-1">
         {initializing ? (
           <div className="max-w-7xl mx-auto px-4 py-20 text-center space-y-3">
@@ -219,6 +477,9 @@ export default function App() {
                 onStartReview={(invId) => {
                   setActiveInvoiceId(invId);
                   setCurrentView('review');
+                }}
+                onBackgroundJobQueued={() => {
+                  void pollBackgroundStatus();
                 }}
               />
             )}

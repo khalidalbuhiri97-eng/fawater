@@ -22,12 +22,14 @@ interface OperationDashboardProps {
   operation: Operation;
   onUpdateOperation: (op: Operation) => void;
   onStartReview: (invoiceId: string) => void;
+  onBackgroundJobQueued?: () => void;
 }
 
 export const OperationDashboard: React.FC<OperationDashboardProps> = ({
   operation,
   onUpdateOperation,
   onStartReview,
+  onBackgroundJobQueued,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'invoices' | 'custom_fields' | 'export'>('overview');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -323,7 +325,12 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         <CustomFieldsManager operation={operation} onUpdateOperation={onUpdateOperation} />
       )}
 
-      {activeTab === 'export' && <ExportCenter operation={operation} />}
+      {activeTab === 'export' && (
+        <ExportCenter
+          operation={operation}
+          onBackgroundExportQueued={() => onBackgroundJobQueued?.()}
+        />
+      )}
 
       <BatchUploadModal
         isOpen={isUploadModalOpen}
@@ -332,6 +339,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         operation={operation}
         onUpdateOperation={onUpdateOperation}
         onStartReview={onStartReview}
+        onBackgroundBatchQueued={() => onBackgroundJobQueued?.()}
       />
     </div>
   );
