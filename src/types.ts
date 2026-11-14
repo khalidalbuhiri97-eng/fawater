@@ -71,6 +71,14 @@ export interface InvoiceRecord {
   errorMessage?: string;
   createdAt: string;
   updatedAt: string;
+  // Official template specific fields
+  cashSales?: number;
+  networkSales?: number;
+  day?: string;
+  cashBalance?: number;
+  cashBoxBalance?: number;
+  networkBalance?: number;
+  balance?: number;
 }
 
 export interface ExcelMapping {

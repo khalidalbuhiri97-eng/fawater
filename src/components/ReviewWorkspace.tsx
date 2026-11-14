@@ -3,7 +3,7 @@ import {
   ChevronRight, ChevronLeft, ZoomIn, ZoomOut, RotateCcw, Sparkles, Save, Trash2, Plus, 
   CheckCircle2, AlertCircle, FileText, Building2, Calendar, Hash, DollarSign, Percent, Tag 
 } from 'lucide-react';
-import { InvoiceRecord, Operation, DocumentType, InvoiceItem } from '../types';
+import { InvoiceRecord, Operation, DocumentType } from '../types';
 
 interface ReviewWorkspaceProps {
   operation: Operation;
@@ -43,22 +43,25 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     );
   }
 
+  const isSales = currentInvoice.documentType === 'مبيعات' || currentInvoice.documentType === 'فاتورة ضريبية';
+
   const handleFieldChange = (field: keyof InvoiceRecord, value: any) => {
     const updated = { ...currentInvoice, [field]: value, updatedAt: new Date().toISOString().split('T')[0] };
     
-    if (['subtotal', 'taxAmount', 'discount'].includes(field)) {
-      const sub = Number(field === 'subtotal' ? value : currentInvoice.subtotal || 0);
-      const tax = Number(field === 'taxAmount' ? value : currentInvoice.taxAmount || 0);
-      const disc = Number(field === 'discount' ? value : currentInvoice.discount || 0);
-      updated.grandTotal = sub + tax - disc;
+    if (isSales) {
+      if (['cashSales', 'networkSales'].includes(field)) {
+        const cash = Number(field === 'cashSales' ? value : currentInvoice.cashSales || 0);
+        const net = Number(field === 'networkSales' ? value : currentInvoice.networkSales || 0);
+        updated.grandTotal = cash + net;
+      }
+    } else {
+      if (['subtotal', 'taxAmount'].includes(field)) {
+        const sub = Number(field === 'subtotal' ? value : currentInvoice.subtotal || 0);
+        const tax = Number(field === 'taxAmount' ? value : currentInvoice.taxAmount || 0);
+        updated.grandTotal = sub + tax;
+      }
     }
 
-    updateInvoiceInList(updated);
-  };
-
-  const handleCustomFieldChange = (cfId: string, val: any) => {
-    const customVals = { ...(currentInvoice.customFieldsValues || {}), [cfId]: val };
-    const updated = { ...currentInvoice, customFieldsValues: customVals, updatedAt: new Date().toISOString().split('T')[0] };
     updateInvoiceInList(updated);
   };
 
@@ -71,48 +74,10 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     });
   };
 
-  const handleAddItem = () => {
-    const newItem: InvoiceItem = {
-      id: 'item_' + Date.now(),
-      name: '',
-      code: '',
-      quantity: 1,
-      unit: 'حبة',
-      unitPrice: 0,
-      discount: 0,
-      tax: 0,
-      total: 0
-    };
-    const updatedItems = [...(currentInvoice.items || []), newItem];
-    updateInvoiceInList({ ...currentInvoice, items: updatedItems });
-  };
-
-  const handleUpdateItem = (itemId: string, field: keyof InvoiceItem, val: any) => {
-    const updatedItems = (currentInvoice.items || []).map(item => {
-      if (item.id === itemId) {
-        const updated = { ...item, [field]: val };
-        if (['quantity', 'unitPrice', 'discount', 'tax'].includes(field)) {
-          const qty = Number(field === 'quantity' ? val : item.quantity);
-          const price = Number(field === 'unitPrice' ? val : item.unitPrice);
-          const disc = Number(field === 'discount' ? val : item.discount);
-          updated.total = (qty * price) - disc;
-        }
-        return updated;
-      }
-      return item;
-    });
-    updateInvoiceInList({ ...currentInvoice, items: updatedItems });
-  };
-
-  const handleDeleteItem = (itemId: string) => {
-    const updatedItems = (currentInvoice.items || []).filter(item => item.id !== itemId);
-    updateInvoiceInList({ ...currentInvoice, items: updatedItems });
-  };
-
   const handleSaveAndNext = () => {
     const updated = { ...currentInvoice, status: 'مكتملة' as const };
     updateInvoiceInList(updated);
-    setMsg({ type: 'success', text: 'تم حفظ الفاتورة وتحديث ملف Excel بنجاح' });
+    setMsg({ type: 'success', text: 'تم حفظ الفاتورة وتحديث ملف Excel بالمعادلات بنجاح' });
     setTimeout(() => setMsg(null), 3000);
 
     if (currentIndex < invoices.length - 1) {
@@ -141,32 +106,11 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         const ext = data.data;
         const updated: InvoiceRecord = {
           ...currentInvoice,
-          invoiceNumber: ext.invoiceNumber || currentInvoice.invoiceNumber,
           invoiceDate: ext.invoiceDate || currentInvoice.invoiceDate,
-          documentType: ext.documentType || currentInvoice.documentType,
           issuerName: ext.issuerName || currentInvoice.issuerName,
-          clientName: ext.clientName || currentInvoice.clientName,
-          issuerTaxId: ext.issuerTaxId || currentInvoice.issuerTaxId,
-          clientTaxId: ext.clientTaxId || currentInvoice.clientTaxId,
-          currency: ext.currency || currentInvoice.currency,
           subtotal: Number(ext.subtotal || currentInvoice.subtotal),
           taxAmount: Number(ext.taxAmount || currentInvoice.taxAmount),
-          taxRate: Number(ext.taxRate || currentInvoice.taxRate),
-          discount: Number(ext.discount || currentInvoice.discount),
-          grandTotal: Number(ext.grandTotal || currentInvoice.grandTotal),
-          notes: ext.notes || currentInvoice.notes,
-          items: ext.items ? ext.items.map((it: any, idx: number) => ({
-            id: 'item_' + idx + '_' + Date.now(),
-            name: it.name || '',
-            code: it.code || '',
-            quantity: Number(it.quantity || 1),
-            unit: it.unit || 'حبة',
-            unitPrice: Number(it.unitPrice || 0),
-            discount: Number(it.discount || 0),
-            tax: Number(it.tax || 0),
-            total: Number(it.total || 0)
-          })) : currentInvoice.items,
-          customFieldsValues: ext.customFieldsExtracted ? { ...currentInvoice.customFieldsValues, ...ext.customFieldsExtracted } : currentInvoice.customFieldsValues,
+          grandTotal: Number(ext.grandTotal || (Number(ext.subtotal || 0) + Number(ext.taxAmount || 0))),
           status: 'تحتاج مراجعة'
         };
         updateInvoiceInList(updated);
@@ -234,7 +178,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Main Split Workspace: Left side Image, Right side Data Form */}
+      {/* Main Split Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Side: Invoice Image Viewer */}
         <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden sticky top-20">
@@ -288,8 +232,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <span>{extractingSingle ? 'جاري الاستخراج...' : 'استخراج بالذكاء الاصطناعي'}</span>
             </button>
 
-            <span className="text-xs text-slate-500 font-medium">
-              النوع: {currentInvoice.documentType}
+            <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold">
+              {currentInvoice.documentType}
             </span>
           </div>
 
@@ -313,12 +257,14 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           </div>
         </div>
 
-        {/* Right Side: Structured Form */}
+        {/* Right Side: Structured Form matching exact official template columns */}
         <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-6">
           <div className="flex items-center justify-between border-b border-slate-200 pb-4">
             <div>
-              <h3 className="font-extrabold text-lg text-slate-900">مراجعة بيانات الفاتورة والمستند</h3>
-              <p className="text-xs text-slate-500">قم بمراجعة البيانات وتعديلها يدوياً أو عبر الذكاء الاصطناعي</p>
+              <h3 className="font-extrabold text-lg text-slate-900">
+                {isSales ? 'تسجيل ومراجعة المبيعات' : 'تسجيل ومراجعة المشتريات والموردين'}
+              </h3>
+              <p className="text-xs text-slate-500">حقول البيانات مطابقة تماماً لأعمدة قالب Excel الرسمي</p>
             </div>
             <button
               onClick={handleSaveAndNext}
@@ -329,259 +275,162 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             </button>
           </div>
 
-          {/* Basic Fields */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">نوع المستند</label>
-              <select
-                value={currentInvoice.documentType}
-                onChange={(e) => handleFieldChange('documentType', e.target.value as DocumentType)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white text-slate-800"
-              >
-                {['مبيعات', 'مشتريات', 'مصروفات', 'مرتجعات', 'فاتورة ضريبية', 'سند قبض', 'سند صرف', 'أخرى'].map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
+          {isSales ? (
+            /* Sales Fields matching official template */
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">التاريخ</label>
+                <input
+                  type="date"
+                  value={currentInvoice.invoiceDate || ''}
+                  onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-medium"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">رقم الفاتورة</label>
-              <input
-                type="text"
-                value={currentInvoice.invoiceNumber || ''}
-                onChange={(e) => handleFieldChange('invoiceNumber', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-                placeholder="مثال: INV-2026-001"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">اليوم</label>
+                <input
+                  type="text"
+                  value={currentInvoice.day || ''}
+                  onChange={(e) => handleFieldChange('day', e.target.value)}
+                  placeholder="مثال: السبت"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">تاريخ الفاتورة</label>
-              <input
-                type="date"
-                value={currentInvoice.invoiceDate || ''}
-                onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">المبيعات النقدية (الكاش)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.cashSales || 0}
+                  onChange={(e) => handleFieldChange('cashSales', parseFloat(e.target.value) || 0)}
+                  placeholder="0.00"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">العملة</label>
-              <input
-                type="text"
-                value={currentInvoice.currency || 'SAR'}
-                onChange={(e) => handleFieldChange('currency', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">الشبكة (POS)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.networkSales || 0}
+                  onChange={(e) => handleFieldChange('networkSales', parseFloat(e.target.value) || 0)}
+                  placeholder="0.00"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">اسم المؤسسة المصدرة (البائع / المورد)</label>
-              <input
-                type="text"
-                value={currentInvoice.issuerName || ''}
-                onChange={(e) => handleFieldChange('issuerName', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
-            </div>
+              <div className="sm:col-span-2 bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200">
+                <label className="block text-xs font-bold text-emerald-900 mb-1">إجمالي المبيعات (يحسب بمعادلة Excel: =C+D)</label>
+                <div className="text-xl font-extrabold text-emerald-800">
+                  {((currentInvoice.cashSales || 0) + (currentInvoice.networkSales || 0)).toFixed(2)} SAR
+                </div>
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">اسم العميل / المستلم</label>
-              <input
-                type="text"
-                value={currentInvoice.clientName || ''}
-                onChange={(e) => handleFieldChange('clientName', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الكاش</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.cashBalance || 0}
+                  onChange={(e) => handleFieldChange('cashBalance', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">الرقم الضريبي للمؤسسة</label>
-              <input
-                type="text"
-                value={currentInvoice.issuerTaxId || ''}
-                onChange={(e) => handleFieldChange('issuerTaxId', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الصندوق</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.cashBoxBalance || 0}
+                  onChange={(e) => handleFieldChange('cashBoxBalance', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">الرقم الضريبي للعميل</label>
-              <input
-                type="text"
-                value={currentInvoice.clientTaxId || ''}
-                onChange={(e) => handleFieldChange('clientTaxId', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
-              />
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الشبكة (البنك)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.networkBalance || 0}
+                  onChange={(e) => handleFieldChange('networkBalance', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+                />
+              </div>
             </div>
-          </div>
+          ) : (
+            /* Purchases Fields matching official template */
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">التاريخ</label>
+                <input
+                  type="date"
+                  value={currentInvoice.invoiceDate || ''}
+                  onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-medium"
+                />
+              </div>
 
-          {/* Financial Totals */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">الإجمالي قبل الضريبة</label>
-              <input
-                type="number"
-                step="0.01"
-                value={currentInvoice.subtotal || 0}
-                onChange={(e) => handleFieldChange('subtotal', parseFloat(e.target.value) || 0)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">اسم المورد</label>
+                <input
+                  type="text"
+                  value={currentInvoice.issuerName || ''}
+                  onChange={(e) => handleFieldChange('issuerName', e.target.value)}
+                  placeholder="اسم المورد أو الشركة"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-medium"
+                />
+              </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">قيمة الضريبة</label>
-              <input
-                type="number"
-                step="0.01"
-                value={currentInvoice.taxAmount || 0}
-                onChange={(e) => handleFieldChange('taxAmount', parseFloat(e.target.value) || 0)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">المبلغ قبل الضريبة</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.subtotal || 0}
+                  onChange={(e) => handleFieldChange('subtotal', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
+                />
+              </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-600 mb-1">الخصم</label>
-              <input
-                type="number"
-                step="0.01"
-                value={currentInvoice.discount || 0}
-                onChange={(e) => handleFieldChange('discount', parseFloat(e.target.value) || 0)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white outline-none text-slate-800"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">ضريبة القيمة المضافة (VAT)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.taxAmount || 0}
+                  onChange={(e) => handleFieldChange('taxAmount', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
+                />
+              </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-emerald-700 mb-1">الإجمالي النهائي</label>
-              <input
-                type="number"
-                step="0.01"
-                value={currentInvoice.grandTotal || 0}
-                onChange={(e) => handleFieldChange('grandTotal', parseFloat(e.target.value) || 0)}
-                className="w-full px-3 py-2 rounded-xl border border-emerald-400 text-xs font-extrabold bg-emerald-50 outline-none text-emerald-900"
-              />
-            </div>
-          </div>
+              <div className="sm:col-span-2 bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200">
+                <label className="block text-xs font-bold text-emerald-900 mb-1">الإجمالي شامل الضريبة (يحسب بمعادلة Excel: =C+D)</label>
+                <div className="text-xl font-extrabold text-emerald-800">
+                  {((currentInvoice.subtotal || 0) + (currentInvoice.taxAmount || 0)).toFixed(2)} SAR
+                </div>
+              </div>
 
-          {/* Custom Fields */}
-          {operation.customFields && operation.customFields.length > 0 && (
-            <div className="border-t border-slate-200 pt-4">
-              <h4 className="font-bold text-xs text-slate-800 mb-3 uppercase tracking-wider">الحقول المخصصة للمؤسسة</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {operation.customFields.map((cf) => (
-                  <div key={cf.id}>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">{cf.name}</label>
-                    {cf.type === 'قائمة خيارات' && cf.options ? (
-                      <select
-                        value={currentInvoice.customFieldsValues?.[cf.id] || ''}
-                        onChange={(e) => handleCustomFieldChange(cf.id, e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                      >
-                        <option value="">اختر...</option>
-                        {cf.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
-                    ) : (
-                      <input
-                        type={cf.type === 'رقم' || cf.type === 'مبلغ' ? 'number' : 'text'}
-                        value={currentInvoice.customFieldsValues?.[cf.id] || ''}
-                        onChange={(e) => handleCustomFieldChange(cf.id, e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                      />
-                    )}
-                  </div>
-                ))}
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">الرصيد</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={currentInvoice.balance || 0}
+                  onChange={(e) => handleFieldChange('balance', parseFloat(e.target.value) || 0)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+                />
               </div>
             </div>
           )}
 
-          {/* Invoice Items Table */}
-          <div className="border-t border-slate-200 pt-4">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider">تفاصيل الأصناف ({currentInvoice.items?.length || 0})</h4>
-              <button
-                onClick={handleAddItem}
-                className="flex items-center gap-1 px-3.5 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-xl text-xs font-bold transition"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>إضافة صنف</span>
-              </button>
-            </div>
-
-            {(!currentInvoice.items || currentInvoice.items.length === 0) ? (
-              <div className="p-4 bg-slate-50 rounded-xl text-center text-xs text-slate-500">
-                لا توجد أصناف مضافة. انقر على "إضافة صنف" أو اعتمد على الاستخراج الذكي.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-xs">
-                  <thead className="bg-slate-100 text-slate-700">
-                    <tr>
-                      <th className="p-2.5">الصنف</th>
-                      <th className="p-2.5 w-16">الكمية</th>
-                      <th className="p-2.5 w-20">الوحدة</th>
-                      <th className="p-2.5 w-24">السعر</th>
-                      <th className="p-2.5 w-24">الإجمالي</th>
-                      <th className="p-2.5 w-10"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {currentInvoice.items.map((item) => (
-                      <tr key={item.id}>
-                        <td className="p-2.5">
-                          <input
-                            type="text"
-                            value={item.name}
-                            onChange={(e) => handleUpdateItem(item.id, 'name', e.target.value)}
-                            placeholder="اسم الصنف"
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
-                          />
-                        </td>
-                        <td className="p-2.5">
-                          <input
-                            type="number"
-                            value={item.quantity}
-                            onChange={(e) => handleUpdateItem(item.id, 'quantity', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
-                          />
-                        </td>
-                        <td className="p-2.5">
-                          <input
-                            type="text"
-                            value={item.unit}
-                            onChange={(e) => handleUpdateItem(item.id, 'unit', e.target.value)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
-                          />
-                        </td>
-                        <td className="p-2.5">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={item.unitPrice}
-                            onChange={(e) => handleUpdateItem(item.id, 'unitPrice', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
-                          />
-                        </td>
-                        <td className="p-2.5 font-bold text-emerald-700">
-                          {item.total.toFixed(2)}
-                        </td>
-                        <td className="p-2.5 text-center">
-                          <button
-                            onClick={() => handleDeleteItem(item.id)}
-                            className="text-slate-400 hover:text-red-600 p-1 rounded"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">ملاحظات الفاتورة</label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">ملاحظات إضافية</label>
             <textarea
               rows={2}
               value={currentInvoice.notes || ''}
