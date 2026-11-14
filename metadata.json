@@ -2,5 +2,7 @@
   "name": "نظام ذكي لاستخراج الفواتير وإدارتها عبر Excel",
   "description": "منصة ذكية لاستخراج بيانات الفواتير والمستندات باستخدام الذكاء الاصطناعي Gemini Vision وإدارتها وتصديرها عبر ملفات Excel.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
