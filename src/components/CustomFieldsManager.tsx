@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Plus, Trash2, Tag, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Tag } from 'lucide-react';
 import { CustomField, FieldType, Operation } from '../types';
+import { generateUuid } from '../services/localStore';
 
 interface CustomFieldsManagerProps {
   operation: Operation;
@@ -26,7 +27,7 @@ export const CustomFieldsManager: React.FC<CustomFieldsManagerProps> = ({
     if (!name.trim()) return;
 
     const newField: CustomField = {
-      id: 'cf_' + Date.now(),
+      id: generateUuid(),
       name: name.trim(),
       type,
       required,
@@ -34,14 +35,14 @@ export const CustomFieldsManager: React.FC<CustomFieldsManagerProps> = ({
       manual: true,
       excelSheet,
       excelColumn: excelColumn.trim() || name.trim(),
-      options: type === 'قائمة خيارات' ? optionsStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
+      options: type === 'قائمة خيارات' ? optionsStr.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     };
 
     const updatedFields = [...fields, newField];
     onUpdateOperation({
       ...operation,
       customFields: updatedFields,
-      updatedAt: new Date().toISOString().split('T')[0]
+      updatedAt: new Date().toISOString(),
     });
 
     setName('');
@@ -50,11 +51,11 @@ export const CustomFieldsManager: React.FC<CustomFieldsManagerProps> = ({
   };
 
   const handleDeleteField = (id: string) => {
-    const updatedFields = fields.filter(f => f.id !== id);
+    const updatedFields = fields.filter((f) => f.id !== id);
     onUpdateOperation({
       ...operation,
       customFields: updatedFields,
-      updatedAt: new Date().toISOString().split('T')[0]
+      updatedAt: new Date().toISOString(),
     });
   };
 

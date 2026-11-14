@@ -1,22 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { Operation } from './types';
+import { Operation, SyncOverview } from './types';
 import {
+  initializeDatabase,
   getOperations,
   saveOperation,
-  deleteOperation,
+  deleteOperationConfirmed,
   hydrateOperationImages,
 } from './services/dbService';
 import { downloadOperationExcel } from './services/excelService';
 import { getOfficialTemplate } from './services/templateService';
+import { subscribeSyncStatus, syncAllPending } from './services/syncService';
 import { Navbar } from './components/Navbar';
 import { OperationsList } from './components/OperationsList';
 import { NewOperationModal } from './components/NewOperationModal';
 import { OperationDashboard } from './components/OperationDashboard';
 import { ReviewWorkspace } from './components/ReviewWorkspace';
-import { AlertCircle, CheckCircle2, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react';
 
 export default function App() {
   const [operations, setOperations] = useState<Operation[]>([]);
+  const [initializing, setInitializing] = useState(true);
+  const [syncOverview, setSyncOverview] = useState<SyncOverview | undefined>(undefined);
   const [currentView, setCurrentView] = useState<'home' | 'dashboard' | 'review'>('home');
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
@@ -24,38 +28,69 @@ export default function App() {
   const [banner, setBanner] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
   useEffect(() => {
-    try {
-      const ops = getOperations();
-      setOperations(ops);
-    } catch (err: any) {
-      setBanner({ type: 'error', text: err?.message || 'تعذر تحميل البيانات المحلية' });
-    }
+    const unsubscribe = subscribeSyncStatus((overview) => {
+      setSyncOverview(overview);
+    });
+
+    initializeDatabase()
+      .then((ops) => {
+        setOperations(ops);
+      })
+      .catch((err: any) => {
+        setBanner({ type: 'error', text: err?.message || 'تعذر تحميل البيانات من IndexedDB' });
+      })
+      .finally(() => {
+        setInitializing(false);
+      });
+
     // Pre-validate official template on startup
     getOfficialTemplate().catch((err) => {
       console.error('Official template initialization error:', err);
     });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  const handleOperationCreated = (newOp: Operation) => {
+  const handleManualSync = async () => {
+    const res = await syncAllPending();
+    const freshOps = await getOperations();
+    setOperations(freshOps);
+    if (res.failed > 0) {
+      setBanner({
+        type: 'error',
+        text: `تمت مزامنة ${res.synced} عنصر وتعذر مزامنة ${res.failed} عنصر. تم حفظها بأمان محلياً لإعادة المحاولة.`,
+      });
+    } else if (res.synced > 0) {
+      setBanner({
+        type: 'success',
+        text: `تمت مزامنة ${res.synced} سجل بنجاح مع قاعدة البيانات.`,
+      });
+    }
+  };
+
+  const handleOperationCreated = async (newOp: Operation) => {
     try {
-      saveOperation(newOp);
-      setOperations(getOperations());
-      setActiveOperationId(newOp.id);
+      const saved = await saveOperation(newOp);
+      setOperations(await getOperations());
+      setActiveOperationId(saved.id);
       setCurrentView('dashboard');
     } catch (err: any) {
       setBanner({ type: 'error', text: err?.message || 'فشل حفظ العملية الجديدة' });
     }
   };
 
-  const handleUpdateOperation = (updatedOp: Operation) => {
+  const handleUpdateOperation = async (updatedOp: Operation) => {
     try {
-      saveOperation(updatedOp);
+      // Optimistically update in-memory state immediately so UI remains responsive
       setOperations((prev) => {
         const exists = prev.some((o) => o.id === updatedOp.id);
         return exists
           ? prev.map((o) => (o.id === updatedOp.id ? updatedOp : o))
           : [updatedOp, ...prev];
       });
+      await saveOperation(updatedOp);
     } catch (err: any) {
       setBanner({ type: 'error', text: err?.message || 'فشل حفظ التعديلات' });
     }
@@ -72,12 +107,16 @@ export default function App() {
     }
   };
 
-  const handleDeleteOperation = (id: string) => {
-    deleteOperation(id);
-    setOperations(getOperations());
-    if (activeOperationId === id) {
-      setActiveOperationId(null);
-      setCurrentView('home');
+  const handleDeleteOperation = async (id: string) => {
+    try {
+      await deleteOperationConfirmed(id, true);
+      setOperations(await getOperations());
+      if (activeOperationId === id) {
+        setActiveOperationId(null);
+        setCurrentView('home');
+      }
+    } catch (err: any) {
+      setBanner({ type: 'error', text: err?.message || 'تعذر حذف العملية' });
     }
   };
 
@@ -88,6 +127,7 @@ export default function App() {
     setBanner(null);
     try {
       const result = await downloadOperationExcel(activeOperation);
+      setOperations(await getOperations());
       setBanner({
         type: 'success',
         text: `تم تصدير "${result.fileName}" بنجاح (${result.salesWritten} مبيعات، ${result.purchasesWritten} مشتريات).`,
@@ -107,6 +147,8 @@ export default function App() {
     >
       <Navbar
         currentOperation={currentView !== 'home' ? activeOperation : undefined}
+        syncOverview={syncOverview}
+        onManualSync={handleManualSync}
         onGoHome={() => {
           setCurrentView('home');
           setActiveOperationId(null);
@@ -140,35 +182,46 @@ export default function App() {
       )}
 
       <main className="flex-1">
-        {currentView === 'home' && (
-          <OperationsList
-            operations={operations}
-            onSelectOperation={handleSelectOperation}
-            onOpenNewModal={() => setIsNewModalOpen(true)}
-            onDeleteOperation={handleDeleteOperation}
-            onUpdateOperation={handleUpdateOperation}
-          />
-        )}
+        {initializing ? (
+          <div className="max-w-7xl mx-auto px-4 py-20 text-center space-y-3">
+            <Loader2 className="w-10 h-10 text-emerald-600 animate-spin mx-auto" />
+            <p className="text-sm font-semibold text-slate-600">
+              جاري تهيئة قاعدة البيانات المحلية (IndexedDB) والتحقق من المزامنة...
+            </p>
+          </div>
+        ) : (
+          <>
+            {currentView === 'home' && (
+              <OperationsList
+                operations={operations}
+                onSelectOperation={handleSelectOperation}
+                onOpenNewModal={() => setIsNewModalOpen(true)}
+                onDeleteOperation={handleDeleteOperation}
+                onUpdateOperation={handleUpdateOperation}
+              />
+            )}
 
-        {currentView === 'dashboard' && activeOperation && (
-          <OperationDashboard
-            operation={activeOperation}
-            onUpdateOperation={handleUpdateOperation}
-            onStartReview={(invId) => {
-              setActiveInvoiceId(invId);
-              setCurrentView('review');
-            }}
-          />
-        )}
+            {currentView === 'dashboard' && activeOperation && (
+              <OperationDashboard
+                operation={activeOperation}
+                onUpdateOperation={handleUpdateOperation}
+                onStartReview={(invId) => {
+                  setActiveInvoiceId(invId);
+                  setCurrentView('review');
+                }}
+              />
+            )}
 
-        {currentView === 'review' && activeOperation && activeInvoiceId && (
-          <ReviewWorkspace
-            operation={activeOperation}
-            activeInvoiceId={activeInvoiceId}
-            onUpdateOperation={handleUpdateOperation}
-            onBackToDashboard={() => setCurrentView('dashboard')}
-            onSelectInvoice={(invId) => setActiveInvoiceId(invId)}
-          />
+            {currentView === 'review' && activeOperation && activeInvoiceId && (
+              <ReviewWorkspace
+                operation={activeOperation}
+                activeInvoiceId={activeInvoiceId}
+                onUpdateOperation={handleUpdateOperation}
+                onBackToDashboard={() => setCurrentView('dashboard')}
+                onSelectInvoice={(invId) => setActiveInvoiceId(invId)}
+              />
+            )}
+          </>
         )}
       </main>
 

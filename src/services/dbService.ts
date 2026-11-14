@@ -1,91 +1,154 @@
-import { Operation, InvoiceRecord, ActivityType, ExportTrackingEntry, ExportTrackingRecord } from '../types';
+import {
+  ActivityType,
+  CustomField,
+  ExportBatchRecord,
+  ExportTrackingEntry,
+  ExportTrackingRecord,
+  InvoiceRecord,
+  Operation,
+} from '../types';
 import { clearLegacyTemplateCaches } from './templateService';
+import {
+  generateUuid,
+  getAllExportTrackingFromStore,
+  getExportFileFromStore,
+  getMetaValue,
+  hasIndexedDb,
+  idbDelete,
+  idbGet,
+  idbPut,
+  isValidUuid,
+  readAllOrganizationsFromStore,
+  readExportTrackingFromStore,
+  saveExportFileToStore,
+  setMetaValue,
+  STORE_NAMES,
+  StoredImageRecord,
+  toStableUuid,
+  writeExportTrackingToStore,
+} from './localStore';
+import {
+  enqueueSyncTask,
+  initOnlineSyncListeners,
+  pullFromSupabaseAndMerge,
+  refreshSyncOverview,
+  syncAllPending,
+} from './syncService';
 
-const STORAGE_KEY = 'sooq_operations_db_v2';
-const EXPORT_TRACKING_KEY = 'fawater_export_tracking_v1';
+export const LEGACY_STORAGE_KEY = 'sooq_operations_db_v2';
+export const LEGACY_EXPORT_TRACKING_KEY = 'fawater_export_tracking_v1';
+const LEGACY_IMAGES_DB_NAME = 'fawater_images_db';
+const LEGACY_IMAGES_STORE_NAME = 'invoice_images';
 
-const IMAGES_DB_NAME = 'fawater_images_db';
-const IMAGES_DB_VERSION = 1;
-const IMAGES_STORE_NAME = 'invoice_images';
-
-interface StoredImageRecord {
-  invoiceId: string;
-  imageBase64: string;
-  imageMimeType: string;
-  updatedAt: string;
-}
-
-function openImagesDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      reject(new Error('IndexedDB غير متوفر في هذه البيئة'));
+function openLegacyImagesDbIfExists(): Promise<IDBDatabase | null> {
+  return new Promise((resolve) => {
+    if (!hasIndexedDb()) {
+      resolve(null);
       return;
     }
-    const req = indexedDB.open(IMAGES_DB_NAME, IMAGES_DB_VERSION);
+    const req = indexedDB.open(LEGACY_IMAGES_DB_NAME, 1);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(IMAGES_STORE_NAME)) {
-        db.createObjectStore(IMAGES_STORE_NAME, { keyPath: 'invoiceId' });
+      if (!db.objectStoreNames.contains(LEGACY_IMAGES_STORE_NAME)) {
+        db.createObjectStore(LEGACY_IMAGES_STORE_NAME, { keyPath: 'invoiceId' });
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('فشل فتح قاعدة بيانات صور الفواتير'));
+    req.onerror = () => resolve(null);
   });
 }
 
-export async function saveInvoiceImage(
-  invoiceId: string,
-  imageBase64: string,
-  imageMimeType: string = 'image/jpeg'
-): Promise<void> {
-  if (!imageBase64) return;
-  const db = await openImagesDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IMAGES_STORE_NAME, 'readwrite');
-    const store = tx.objectStore(IMAGES_STORE_NAME);
-    const req = store.put({
-      invoiceId,
-      imageBase64,
-      imageMimeType,
-      updatedAt: new Date().toISOString(),
-    } as StoredImageRecord);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error || new Error('فشل حفظ صورة الفاتورة في IndexedDB'));
-  });
-}
-
-export async function getInvoiceImage(
-  invoiceId: string
-): Promise<{ imageBase64: string; imageMimeType: string } | null> {
+async function readLegacyImage(invoiceId: string): Promise<{ imageBase64: string; imageMimeType: string } | null> {
   try {
-    const db = await openImagesDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(IMAGES_STORE_NAME, 'readonly');
-      const store = tx.objectStore(IMAGES_STORE_NAME);
+    const db = await openLegacyImagesDbIfExists();
+    if (!db) return null;
+    return await new Promise((resolve) => {
+      const tx = db.transaction(LEGACY_IMAGES_STORE_NAME, 'readonly');
+      const store = tx.objectStore(LEGACY_IMAGES_STORE_NAME);
       const req = store.get(invoiceId);
       req.onsuccess = () => {
-        const res = req.result as StoredImageRecord | undefined;
-        resolve(res ? { imageBase64: res.imageBase64, imageMimeType: res.imageMimeType } : null);
+        const res = req.result as any;
+        resolve(res?.imageBase64 ? { imageBase64: res.imageBase64, imageMimeType: res.imageMimeType || 'image/jpeg' } : null);
       };
-      req.onerror = () => reject(req.error);
+      req.onerror = () => resolve(null);
     });
   } catch {
     return null;
   }
 }
 
+export async function saveInvoiceImage(
+  invoiceId: string,
+  imageBase64: string,
+  imageMimeType: string = 'image/jpeg',
+  options?: { organizationId?: string; fileName?: string; fileSize?: number; enqueueSync?: boolean }
+): Promise<void> {
+  if (!imageBase64) return;
+  const stableInvId = isValidUuid(invoiceId) ? invoiceId : toStableUuid(invoiceId);
+  const record: StoredImageRecord = {
+    invoiceId: stableInvId,
+    organizationId: options?.organizationId,
+    imageBase64,
+    imageMimeType,
+    fileName: options?.fileName,
+    fileSize: options?.fileSize,
+    updatedAt: new Date().toISOString(),
+  };
+  await idbPut(STORE_NAMES.INVOICE_IMAGES, record);
+
+  if (options?.enqueueSync && options.organizationId) {
+    await enqueueSyncTask(
+      'attachment',
+      stableInvId,
+      { mimeType: imageMimeType, fileName: options.fileName },
+      options.organizationId
+    );
+  }
+}
+
+export async function getInvoiceImage(
+  invoiceId: string
+): Promise<{ imageBase64: string; imageMimeType: string } | null> {
+  try {
+    const direct = await idbGet<StoredImageRecord>(STORE_NAMES.INVOICE_IMAGES, invoiceId);
+    if (direct?.imageBase64) {
+      return { imageBase64: direct.imageBase64, imageMimeType: direct.imageMimeType };
+    }
+    // Check legacy store fallback if not yet migrated
+    const legacy = await readLegacyImage(invoiceId);
+    if (legacy) {
+      await saveInvoiceImage(invoiceId, legacy.imageBase64, legacy.imageMimeType);
+      return legacy;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Fallback to Supabase Storage if image exists remotely
+  if (isValidUuid(invoiceId) && (typeof navigator === 'undefined' || navigator.onLine)) {
+    try {
+      const res = await fetch(`/api/supabase/attachments/${encodeURIComponent(invoiceId)}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.imageBase64) {
+          await saveInvoiceImage(invoiceId, json.imageBase64, json.mimeType || 'image/jpeg', {
+            fileName: json.fileName,
+          });
+          return { imageBase64: json.imageBase64, imageMimeType: json.mimeType || 'image/jpeg' };
+        }
+      }
+    } catch {
+      // offline/unavailable
+    }
+  }
+  return null;
+}
+
 export async function deleteInvoiceImage(invoiceId: string): Promise<void> {
   try {
-    const db = await openImagesDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(IMAGES_STORE_NAME, 'readwrite');
-      const store = tx.objectStore(IMAGES_STORE_NAME);
-      const req = store.delete(invoiceId);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
+    await idbDelete(STORE_NAMES.INVOICE_IMAGES, invoiceId);
   } catch {
-    // ignore cleanup failures
+    // ignore
   }
 }
 
@@ -111,147 +174,334 @@ export async function hydrateOperationImages(operation: Operation): Promise<Oper
   return { ...operation, invoices: hydratedInvoices };
 }
 
-function stripHeavyFieldsForStorage(ops: Operation[]): Operation[] {
-  return ops.map((op) => {
-    const { excelBase64: _ignoredExcel, ...restOp } = op as any;
-    return {
-      ...restOp,
-      templateType: 'official' as const,
-      invoices: (op.invoices || []).map((inv) => {
-        const { imageBase64, ...restInv } = inv;
-        return {
-          ...restInv,
-          hasImage: Boolean(inv.hasImage || imageBase64),
-        };
-      }),
-    };
-  });
+function stripHeavyFieldsForOperationStore(op: Operation): Operation {
+  const { excelBase64: _ignoredExcel, ...restOp } = op as any;
+  return {
+    ...restOp,
+    id: isValidUuid(op.id) ? op.id : toStableUuid(op.id),
+    templateType: 'official',
+    customFields: (op.customFields || []).map((cf) => ({
+      ...cf,
+      id: isValidUuid(cf.id) ? cf.id : toStableUuid(cf.id),
+    })),
+    invoices: (op.invoices || []).map((inv) => {
+      const { imageBase64, ...restInv } = inv;
+      const stableInvId = isValidUuid(inv.id) ? inv.id : toStableUuid(inv.id);
+      return {
+        ...restInv,
+        id: stableInvId,
+        organizationId: isValidUuid(op.id) ? op.id : toStableUuid(op.id),
+        hasImage: Boolean(inv.hasImage || imageBase64),
+        items: (inv.items || []).map((it) => ({
+          ...it,
+          id: isValidUuid(it.id) ? it.id : toStableUuid(it.id),
+        })),
+      };
+    }),
+  };
 }
 
-async function migrateLegacyImagesToIndexedDb(ops: Operation[]): Promise<boolean> {
-  let migratedAny = false;
-  for (const op of ops) {
-    for (const inv of op.invoices || []) {
-      if (inv.imageBase64) {
-        try {
-          await saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg');
-          migratedAny = true;
-        } catch (err) {
-          console.error('Failed migrating legacy invoice image to IndexedDB:', inv.id, err);
+/**
+ * Migrates legacy localStorage operations & export tracking + legacy fawater_images_db
+ * into IndexedDB `fawater_local_store_v1` idempotently.
+ * Preserves legacy keys until IndexedDB persistence completes cleanly without errors.
+ */
+export async function migrateLegacyData(): Promise<{
+  migratedOrgs: number;
+  migratedInvoices: number;
+  migratedTracking: number;
+}> {
+  clearLegacyTemplateCaches();
+  let migratedOrgs = 0;
+  let migratedInvoices = 0;
+  let migratedTracking = 0;
+
+  if (typeof localStorage === 'undefined') {
+    return { migratedOrgs, migratedInvoices, migratedTracking };
+  }
+
+  const alreadyMigrated = await getMetaValue<boolean>('legacy_migrated_v1');
+  const rawOps = localStorage.getItem(LEGACY_STORAGE_KEY);
+  const rawTracking = localStorage.getItem(LEGACY_EXPORT_TRACKING_KEY);
+
+  if (!rawOps && !rawTracking) {
+    if (!alreadyMigrated) await setMetaValue('legacy_migrated_v1', true);
+    return { migratedOrgs, migratedInvoices, migratedTracking };
+  }
+
+  const orgIdMap = new Map<string, string>();
+  const invIdMap = new Map<string, string>();
+
+  if (rawOps) {
+    try {
+      const legacyOps: Operation[] = JSON.parse(rawOps);
+      const existingOps = await readAllOrganizationsFromStore();
+      const existingOrgIds = new Set(existingOps.map((o) => o.id));
+
+      for (const oldOp of legacyOps) {
+        // Skip empty auto-seeded placeholder org if user never added invoices/fields and name was auto-placeholder
+        const newOrgId = toStableUuid(oldOp.id);
+        orgIdMap.set(oldOp.id, newOrgId);
+
+        const mappedCustomFields: CustomField[] = (oldOp.customFields || []).map((cf) => ({
+          ...cf,
+          id: toStableUuid(cf.id),
+        }));
+
+        const mappedInvoices: InvoiceRecord[] = [];
+        for (const oldInv of oldOp.invoices || []) {
+          const newInvId = toStableUuid(oldInv.id);
+          invIdMap.set(oldInv.id, newInvId);
+
+          // Migrate inline base64 OR legacy fawater_images_db image to fawater_local_store_v1
+          let imgData = oldInv.imageBase64
+            ? { imageBase64: oldInv.imageBase64, imageMimeType: oldInv.imageMimeType || 'image/jpeg' }
+            : await readLegacyImage(oldInv.id);
+
+          if (imgData?.imageBase64) {
+            await saveInvoiceImage(newInvId, imgData.imageBase64, imgData.imageMimeType, {
+              organizationId: newOrgId,
+              fileName: oldInv.imageFileName,
+              enqueueSync: true,
+            });
+          }
+
+          const { imageBase64: _drop, ...cleanInv } = oldInv;
+          const mappedInv: InvoiceRecord = {
+            ...cleanInv,
+            id: newInvId,
+            organizationId: newOrgId,
+            hasImage: Boolean(oldInv.hasImage || imgData?.imageBase64),
+            syncStatus: 'pending',
+            items: (oldInv.items || []).map((it) => ({
+              ...it,
+              id: toStableUuid(it.id),
+            })),
+          };
+          mappedInvoices.push(mappedInv);
+          migratedInvoices++;
+        }
+
+        if (!existingOrgIds.has(newOrgId)) {
+          const cleanOp: Operation = {
+            ...stripHeavyFieldsForOperationStore({
+              ...oldOp,
+              id: newOrgId,
+              customFields: mappedCustomFields,
+              invoices: mappedInvoices,
+            }),
+            syncStatus: 'pending',
+          };
+          await idbPut(STORE_NAMES.ORGANIZATIONS, cleanOp);
+          await enqueueSyncTask('organization', newOrgId, cleanOp, newOrgId);
+          for (const cf of mappedCustomFields) {
+            await enqueueSyncTask('custom_field', cf.id, cf, newOrgId);
+          }
+          for (const inv of mappedInvoices) {
+            await enqueueSyncTask('invoice', inv.id, { organization: cleanOp, invoice: inv }, newOrgId);
+          }
+          migratedOrgs++;
         }
       }
+    } catch (err) {
+      console.error('Legacy operations migration error (preserving source):', err);
+      throw err;
     }
   }
-  return migratedAny;
-}
 
-export function getOperations(): Operation[] {
-  clearLegacyTemplateCaches();
+  if (rawTracking) {
+    try {
+      const legacyTrackingAll: Record<string, any> = JSON.parse(rawTracking);
+      for (const [oldOpId, oldRec] of Object.entries(legacyTrackingAll)) {
+        const newOpId = orgIdMap.get(oldOpId) || toStableUuid(oldOpId);
+        const existingTrack = await readExportTrackingFromStore(newOpId);
+        if (existingTrack) continue;
+
+        const mappedEntries: ExportTrackingEntry[] = (oldRec.entries || []).map((e: any) => ({
+          ...e,
+          operationId: newOpId,
+          invoiceId: invIdMap.get(e.invoiceId) || toStableUuid(e.invoiceId),
+        }));
+        const mappedIds = Array.from(new Set(mappedEntries.map((e) => e.invoiceId)));
+        const batchId = toStableUuid(`legacy_batch_${newOpId}_${oldRec.lastExportedAt || ''}`);
+        const legacyBatch: ExportBatchRecord | null =
+          mappedEntries.length > 0
+            ? {
+                id: batchId,
+                organizationId: newOpId,
+                fileName: 'fawater_migrated_export.xlsx',
+                templateSha256: oldRec.templateSha256 || '',
+                exportedCount: mappedEntries.length,
+                salesCount: mappedEntries.filter((e) => e.sheetName === 'المبيعات').length,
+                purchasesCount: mappedEntries.filter((e) => e.sheetName === 'المشتريات والموردين').length,
+                exportedAt: oldRec.lastExportedAt || new Date().toISOString(),
+                entries: mappedEntries,
+                syncStatus: 'pending',
+              }
+            : null;
+
+        await writeExportTrackingToStore({
+          operationId: newOpId,
+          lastExportedAt: oldRec.lastExportedAt || new Date().toISOString(),
+          templateSha256: oldRec.templateSha256 || '',
+          exportedInvoiceIds: mappedIds,
+          entries: mappedEntries,
+          batches: legacyBatch ? [legacyBatch] : [],
+        });
+        migratedTracking++;
+      }
+    } catch (err) {
+      console.error('Legacy tracking migration error (preserving source):', err);
+      throw err;
+    }
+  }
+
+  // Only mark migrated & remove legacy localStorage keys AFTER IndexedDB writes succeed cleanly
+  await setMetaValue('legacy_migrated_v1', true);
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    if (!data) {
-      const defaultOp = createOperationObject('حسابات المؤسسة', 'تجارة عامة');
-      saveOperations([defaultOp]);
-      return [defaultOp];
-    }
-    const parsed: Operation[] = JSON.parse(data);
-
-    // If legacy records still contain inline base64 images, migrate them cleanly to IndexedDB
-    const hasInlineImages = parsed.some(
-      (op) => (op as any).excelBase64 || (op.invoices || []).some((inv) => Boolean(inv.imageBase64))
-    );
-    if (hasInlineImages) {
-      migrateLegacyImagesToIndexedDb(parsed).then(() => {
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(stripHeavyFieldsForStorage(parsed)));
-        } catch (err) {
-          console.error('Failed compacting localStorage after image migration:', err);
-        }
-      });
-    }
-
-    return parsed.map((op) => ({
-      ...op,
-      templateType: 'official' as const,
-    }));
-  } catch (e) {
-    console.error('Error reading operations:', e);
-    throw new Error('تعذر قراءة بيانات العمليات من التخزين المحلي.');
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_EXPORT_TRACKING_KEY);
+  } catch {
+    // ignore storage removal errors
   }
+
+  return { migratedOrgs, migratedInvoices, migratedTracking };
 }
 
-export function saveOperations(ops: Operation[]) {
-  clearLegacyTemplateCaches();
+/**
+ * App startup initialization:
+ * 1. Attaches online/offline sync listeners
+ * 2. Migrates any legacy localStorage / old IndexedDB records safely
+ * 3. Attempts non-destructive sync & bootstrap with Supabase if configured and online
+ * 4. Returns all organizations (empty array when clean, never injects a fake demo org)
+ */
+export async function initializeDatabase(): Promise<Operation[]> {
+  initOnlineSyncListeners();
+  await migrateLegacyData();
+  await syncAllPending().catch(() => {});
+  await pullFromSupabaseAndMerge().catch(() => {});
+  await refreshSyncOverview();
+  return readAllOrganizationsFromStore();
+}
 
-  // Persist any inline images in memory to IndexedDB asynchronously (without blocking metadata save)
-  for (const op of ops) {
-    for (const inv of op.invoices || []) {
-      if (inv.imageBase64) {
-        saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg').catch((err) => {
-          console.error('Error saving invoice image to IndexedDB:', err);
+export async function getOperations(): Promise<Operation[]> {
+  return readAllOrganizationsFromStore();
+}
+
+export async function getOperationById(id: string): Promise<Operation | undefined> {
+  const op = await idbGet<Operation>(STORE_NAMES.ORGANIZATIONS, id);
+  return op || undefined;
+}
+
+export async function saveOperation(op: Operation): Promise<Operation> {
+  const prev = await idbGet<Operation>(STORE_NAMES.ORGANIZATIONS, op.id);
+  const nowDate = new Date().toISOString().split('T')[0];
+
+  // Store any inline images to IndexedDB and mark attachments for sync
+  for (const inv of op.invoices || []) {
+    if (inv.imageBase64) {
+      const prevImg = await idbGet<StoredImageRecord>(STORE_NAMES.INVOICE_IMAGES, inv.id);
+      if (!prevImg || prevImg.imageBase64 !== inv.imageBase64) {
+        await saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg', {
+          organizationId: op.id,
+          fileName: inv.imageFileName,
+          fileSize: inv.imageFileSize,
+          enqueueSync: true,
         });
       }
     }
   }
 
-  const sanitized = stripHeavyFieldsForStorage(ops);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
-  } catch (e: any) {
-    throw new Error(
-      'تجاوزت البيانات الحد المتاح في التخزين المحلي (localStorage). يرجى مراجعة البيانات أو تصدير الملفات وحذف العمليات غير المطلوبة.'
-    );
-  }
-}
+  const sanitized = stripHeavyFieldsForOperationStore({
+    ...op,
+    updatedAt: nowDate,
+  });
 
-export async function saveOperationWithImages(op: Operation): Promise<void> {
-  for (const inv of op.invoices || []) {
-    if (inv.imageBase64) {
-      await saveInvoiceImage(inv.id, inv.imageBase64, inv.imageMimeType || 'image/jpeg');
+  // Diff organization metadata, custom fields, and invoices to enqueue minimal precise sync tasks
+  const orgMetaChanged =
+    !prev ||
+    prev.name !== sanitized.name ||
+    prev.activityType !== sanitized.activityType ||
+    prev.excelFileName !== sanitized.excelFileName;
+
+  if (orgMetaChanged) {
+    sanitized.syncStatus = 'pending';
+  }
+
+  await idbPut(STORE_NAMES.ORGANIZATIONS, sanitized);
+
+  if (orgMetaChanged) {
+    await enqueueSyncTask('organization', sanitized.id, sanitized, sanitized.id);
+  }
+
+  // Diff custom fields
+  const prevFieldMap = new Map((prev?.customFields || []).map((f) => [f.id, f]));
+  const nextFieldMap = new Map((sanitized.customFields || []).map((f) => [f.id, f]));
+  for (const [fId, f] of nextFieldMap) {
+    const oldF = prevFieldMap.get(fId);
+    if (!oldF || JSON.stringify(oldF) !== JSON.stringify(f)) {
+      await enqueueSyncTask('custom_field', fId, f, sanitized.id);
     }
   }
-  saveOperation(op);
-}
-
-export function getOperationById(id: string): Operation | undefined {
-  const ops = getOperations();
-  return ops.find((o) => o.id === id);
-}
-
-export function saveOperation(op: Operation) {
-  const ops = getOperations();
-  const index = ops.findIndex((o) => o.id === op.id);
-  const updatedOp: Operation = {
-    ...op,
-    templateType: 'official',
-    updatedAt: new Date().toISOString().split('T')[0],
-  };
-  if (index >= 0) {
-    ops[index] = updatedOp;
-  } else {
-    ops.unshift(updatedOp);
+  for (const oldFId of prevFieldMap.keys()) {
+    if (!nextFieldMap.has(oldFId)) {
+      await enqueueSyncTask('delete_custom_field', oldFId, { id: oldFId }, sanitized.id);
+    }
   }
-  saveOperations(ops);
+
+  // Diff invoices
+  const prevInvMap = new Map((prev?.invoices || []).map((i) => [i.id, i]));
+  const nextInvMap = new Map((sanitized.invoices || []).map((i) => [i.id, i]));
+
+  for (const [invId, inv] of nextInvMap) {
+    const oldInv = prevInvMap.get(invId);
+    if (!oldInv || JSON.stringify(oldInv) !== JSON.stringify(inv)) {
+      const invWithPending = { ...inv, syncStatus: 'pending' as const };
+      // Persist pending syncStatus on invoice
+      const idx = sanitized.invoices.findIndex((x) => x.id === invId);
+      if (idx >= 0) sanitized.invoices[idx] = invWithPending;
+      await enqueueSyncTask('invoice', invId, { organization: sanitized, invoice: invWithPending }, sanitized.id);
+    }
+  }
+  for (const oldInvId of prevInvMap.keys()) {
+    if (!nextInvMap.has(oldInvId)) {
+      await deleteInvoiceImage(oldInvId);
+      await enqueueSyncTask('delete_invoice', oldInvId, { id: oldInvId }, sanitized.id);
+    }
+  }
+
+  await idbPut(STORE_NAMES.ORGANIZATIONS, sanitized);
+  // Trigger background non-blocking sync
+  syncAllPending().catch(() => {});
+
+  return sanitized;
 }
 
-export function deleteOperation(id: string) {
-  const ops = getOperations();
-  const target = ops.find((o) => o.id === id);
+export async function deleteOperationConfirmed(id: string, confirmed: boolean): Promise<void> {
+  if (!confirmed) {
+    throw new Error('يلزم تأكيد حذف المؤسسة صراحة قبل المتابعة.');
+  }
+  const target = await getOperationById(id);
   if (target) {
     for (const inv of target.invoices || []) {
-      deleteInvoiceImage(inv.id).catch(() => {});
+      await deleteInvoiceImage(inv.id);
     }
   }
-  const filtered = ops.filter((o) => o.id !== id);
-  saveOperations(filtered);
-  clearExportTracking(id);
+  const tracking = await readExportTrackingFromStore(id);
+  for (const b of tracking?.batches || []) {
+    await idbDelete(STORE_NAMES.EXPORT_FILES, b.id);
+  }
+  await clearExportTracking(id);
+  await idbDelete(STORE_NAMES.ORGANIZATIONS, id);
+  await enqueueSyncTask('delete_organization', id, { id }, id);
+  syncAllPending().catch(() => {});
 }
 
 export function createOperationObject(name: string, activityType: ActivityType): Operation {
   const today = new Date().toISOString().split('T')[0];
   const safeFileBase = name.trim().replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_') || 'fawater';
   return {
-    id: 'op_' + Date.now() + Math.random().toString(36).substring(2, 6),
+    id: generateUuid(),
     name: name.trim(),
     activityType,
     createdAt: today,
@@ -260,65 +510,83 @@ export function createOperationObject(name: string, activityType: ActivityType):
     customFields: [],
     invoices: [],
     excelFileName: `${safeFileBase}_fawater.xlsx`,
+    syncStatus: 'pending',
   };
 }
 
-// --- Independent Export Tracking ---
+// --- Export Batch Tracking & Deduplication ---
 
-function readAllExportTracking(): Record<string, ExportTrackingRecord> {
-  try {
-    const raw = localStorage.getItem(EXPORT_TRACKING_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+export async function getExportTracking(operationId: string): Promise<ExportTrackingRecord | null> {
+  return readExportTrackingFromStore(operationId);
 }
 
-export function getExportTracking(operationId: string): ExportTrackingRecord | null {
-  const all = readAllExportTracking();
-  return all[operationId] || null;
+export async function getAllExportTracking(): Promise<ExportTrackingRecord[]> {
+  return getAllExportTrackingFromStore();
 }
 
-export function recordExportBatch(
-  operationId: string,
-  templateSha256: string,
-  entries: ExportTrackingEntry[]
-): ExportTrackingRecord {
-  const all = readAllExportTracking();
-  const prev = all[operationId];
-  const mergedIds = Array.from(
-    new Set([...(prev?.exportedInvoiceIds || []), ...entries.map((e) => e.invoiceId)])
-  );
+export async function recordExportBatch(params: {
+  batchId: string;
+  operationId: string;
+  fileName: string;
+  templateSha256: string;
+  entries: ExportTrackingEntry[];
+  salesCount: number;
+  purchasesCount: number;
+  xlsxBuffer: ArrayBuffer;
+}): Promise<ExportTrackingRecord> {
+  const prev = await readExportTrackingFromStore(params.operationId);
+  const nowIso = new Date().toISOString();
+
+  const newBatch: ExportBatchRecord = {
+    id: params.batchId,
+    organizationId: params.operationId,
+    fileName: params.fileName,
+    templateSha256: params.templateSha256,
+    exportedCount: params.entries.length,
+    salesCount: params.salesCount,
+    purchasesCount: params.purchasesCount,
+    exportedAt: nowIso,
+    entries: params.entries,
+    syncStatus: 'pending',
+  };
+
+  // Save .xlsx bytes locally for instant re-download from history without re-generating duplicates
+  await saveExportFileToStore({
+    batchId: params.batchId,
+    organizationId: params.operationId,
+    fileName: params.fileName,
+    buffer: params.xlsxBuffer,
+    createdAt: nowIso,
+  });
+
+  // Preserve chronological entry history while maintaining unique exportedInvoiceIds
   const entryMap = new Map<string, ExportTrackingEntry>();
-  for (const e of prev?.entries || []) {
-    entryMap.set(e.invoiceId, e);
-  }
-  for (const e of entries) {
-    entryMap.set(e.invoiceId, e);
-  }
+  for (const e of prev?.entries || []) entryMap.set(e.invoiceId, e);
+  for (const e of params.entries) entryMap.set(e.invoiceId, e);
+
+  const mergedIds = Array.from(
+    new Set([...(prev?.exportedInvoiceIds || []), ...params.entries.map((e) => e.invoiceId)])
+  );
 
   const record: ExportTrackingRecord = {
-    operationId,
-    lastExportedAt: new Date().toISOString(),
-    templateSha256,
+    operationId: params.operationId,
+    lastExportedAt: nowIso,
+    templateSha256: params.templateSha256,
     exportedInvoiceIds: mergedIds,
     entries: Array.from(entryMap.values()),
+    batches: [newBatch, ...(prev?.batches || [])],
   };
-  all[operationId] = record;
-  try {
-    localStorage.setItem(EXPORT_TRACKING_KEY, JSON.stringify(all));
-  } catch {
-    // non-fatal tracking error
-  }
+
+  await writeExportTrackingToStore(record);
+  await enqueueSyncTask('export_batch', params.batchId, newBatch, params.operationId);
+  syncAllPending().catch(() => {});
   return record;
 }
 
-export function clearExportTracking(operationId: string): void {
-  try {
-    const all = readAllExportTracking();
-    delete all[operationId];
-    localStorage.setItem(EXPORT_TRACKING_KEY, JSON.stringify(all));
-  } catch {
-    // ignore
-  }
+export async function getSavedExportFile(batchId: string) {
+  return getExportFileFromStore(batchId);
+}
+
+export async function clearExportTracking(operationId: string): Promise<void> {
+  await idbDelete(STORE_NAMES.EXPORT_TRACKING, operationId);
 }

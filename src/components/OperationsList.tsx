@@ -47,7 +47,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
       const updated = {
         ...editingOp,
         name: newName.trim(),
-        updatedAt: new Date().toISOString().split('T')[0],
+        updatedAt: new Date().toISOString(),
       };
       onUpdateOperation(updated);
       setEditingOp(null);

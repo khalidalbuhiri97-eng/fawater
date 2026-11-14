@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { InvoiceRecord, Operation, DocumentType } from '../types';
 import { getInvoiceImage, saveInvoiceImage } from '../services/dbService';
+import { generateUuid } from '../services/localStore';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -121,11 +122,23 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     isSales || isPurchases ? getSheetSchemaByType(templateSheets, isSales ? 'مبيعات' : 'مشتريات') : undefined;
 
   const updateInvoiceInList = (updatedInv: InvoiceRecord) => {
-    const newInvoices = invoices.map((inv) => (inv.id === updatedInv.id ? updatedInv : inv));
+    const nowIso = new Date().toISOString();
+    const normalizedInv: InvoiceRecord = {
+      ...updatedInv,
+      syncStatus: 'pending',
+      updatedAt: nowIso,
+      // Never permit status مكتملة when invoiceDate is empty or documentType is unresolved
+      status:
+        updatedInv.status === 'مكتملة' &&
+        (!updatedInv.invoiceDate?.trim() || updatedInv.documentType === 'يحتاج تحديد النوع')
+          ? 'تحتاج مراجعة'
+          : updatedInv.status,
+    };
+    const newInvoices = invoices.map((inv) => (inv.id === normalizedInv.id ? normalizedInv : inv));
     onUpdateOperation({
       ...operation,
       invoices: newInvoices,
-      updatedAt: new Date().toISOString().split('T')[0],
+      updatedAt: nowIso,
     });
   };
 
@@ -138,7 +151,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     updateInvoiceInList({
       ...currentInvoice,
       [field]: value,
-      updatedAt: new Date().toISOString().split('T')[0],
+      updatedAt: new Date().toISOString(),
     });
   };
 
@@ -169,14 +182,18 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
     try {
       if (activeImg?.base64) {
-        await saveInvoiceImage(currentInvoice.id, activeImg.base64, activeImg.mimeType);
+        await saveInvoiceImage(currentInvoice.id, activeImg.base64, activeImg.mimeType, {
+          organizationId: operation.id,
+          fileName: currentInvoice.imageFileName,
+          enqueueSync: true,
+        });
       }
 
       const updated: InvoiceRecord = {
         ...currentInvoice,
         status: 'مكتملة',
         hasImage: Boolean(activeImg?.base64 || currentInvoice.hasImage),
-        updatedAt: new Date().toISOString().split('T')[0],
+        updatedAt: new Date().toISOString(),
       };
       updateInvoiceInList(updated);
       setMsg({
@@ -205,6 +222,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          invoiceId: currentInvoice.id,
           imageBase64: activeImg.base64,
           mimeType: activeImg.mimeType || 'image/jpeg',
           fileName: currentInvoice.imageFileName,
@@ -243,8 +261,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           networkSales: toOptionalNum(ext.networkSales) ?? currentInvoice.networkSales,
           notes: ext.notes || currentInvoice.notes,
           items: Array.isArray(ext.items)
-            ? ext.items.map((it: any, idx: number) => ({
-                id: `${currentInvoice.id}_item_${idx}`,
+            ? ext.items.map((it: any) => ({
+                id: generateUuid(),
                 name: String(it?.name || ''),
                 code: it?.code ? String(it.code) : undefined,
                 quantity: toOptionalNum(it?.quantity),
@@ -261,7 +279,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               : currentInvoice.customFieldsValues,
           status: 'تحتاج مراجعة',
           errorMessage: undefined,
-          updatedAt: new Date().toISOString().split('T')[0],
+          updatedAt: new Date().toISOString(),
         };
         updateInvoiceInList(updated);
         setMsg({ type: 'success', text: 'تم استخراج بيانات الفاتورة وتصنيفها عبر Gemini AI.' });
@@ -593,6 +611,64 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             />
           </div>
         </div>
+
+        {(operation.customFields || []).length > 0 && (
+          <div className="pt-4 border-t border-slate-100 space-y-2">
+            <h4 className="text-xs font-bold text-slate-800">الحقول المخصصة للمؤسسة</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {operation.customFields.map((cf) => {
+                const currentVal =
+                  currentInvoice.customFieldsValues?.[cf.id] ??
+                  currentInvoice.customFieldsValues?.[cf.name] ??
+                  '';
+                return (
+                  <div key={cf.id}>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      {cf.name} ({cf.excelSheet})
+                    </label>
+                    {cf.type === 'قائمة خيارات' && cf.options?.length ? (
+                      <select
+                        value={currentVal}
+                        onChange={(e) =>
+                          handleFieldChange('customFieldsValues', {
+                            ...currentInvoice.customFieldsValues,
+                            [cf.id]: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                      >
+                        <option value="">اختر...</option>
+                        {cf.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={
+                          cf.type === 'تاريخ'
+                            ? 'date'
+                            : cf.type === 'رقم' || cf.type === 'مبلغ' || cf.type === 'نسبة'
+                            ? 'number'
+                            : 'text'
+                        }
+                        value={currentVal}
+                        onChange={(e) =>
+                          handleFieldChange('customFieldsValues', {
+                            ...currentInvoice.customFieldsValues,
+                            [cf.id]: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">ملاحظات إضافية</label>

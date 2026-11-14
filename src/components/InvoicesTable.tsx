@@ -35,7 +35,7 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
     onUpdateOperation({
       ...operation,
       invoices: newInvoices,
-      updatedAt: new Date().toISOString().split('T')[0],
+      updatedAt: new Date().toISOString(),
     });
   };
 
@@ -123,17 +123,28 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
                       {inv.grandTotal !== undefined ? `${inv.grandTotal.toFixed(2)} ${inv.currency || ''}` : '—'}
                     </td>
                     <td className="p-4">
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
-                          inv.status === 'مكتملة'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : inv.status === 'فشل'
-                            ? 'bg-red-100 text-red-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {inv.status}
-                      </span>
+                      <div className="flex flex-col gap-1 items-start">
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
+                            inv.status === 'مكتملة'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : inv.status === 'فشل'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {inv.status}
+                        </span>
+                        {inv.syncStatus && inv.syncStatus !== 'synced' && (
+                          <span className="text-[10px] text-slate-500">
+                            {inv.syncStatus === 'failed'
+                              ? 'فشل المزامنة'
+                              : inv.syncStatus === 'syncing'
+                              ? 'جاري المزامنة'
+                              : 'محلي (بانتظار المزامنة)'}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-4 text-center">
                       <div className="flex items-center justify-center gap-2">

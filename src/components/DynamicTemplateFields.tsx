@@ -73,8 +73,8 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
 
   const handleFieldChange = (col: TemplateColumnInfo, rawValue: string) => {
     onUpdateInvoice((prev) => {
-      const today = new Date().toISOString().split('T')[0];
-      const next: InvoiceRecord = { ...prev, updatedAt: today };
+      const nowIso = new Date().toISOString();
+      const next: InvoiceRecord = { ...prev, updatedAt: nowIso };
 
       if (col.kind === 'number') {
         const numVal = parseOptionalNumber(rawValue);

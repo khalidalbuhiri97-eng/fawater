@@ -1,12 +1,13 @@
 import ExcelJS from 'exceljs';
-import { ExportTrackingEntry, InvoiceRecord, Operation } from '../types';
+import { ExportTrackingEntry, ExportTrackingRecord, InvoiceRecord, Operation } from '../types';
 import {
   getOfficialTemplate,
   TemplateColumnInfo,
   TemplateSheetInfo,
   validateAndInspectTemplateBuffer,
 } from './templateService';
-import { recordExportBatch } from './dbService';
+import { getExportTracking, getSavedExportFile, recordExportBatch } from './dbService';
+import { generateUuid } from './localStore';
 
 export interface ExportExecutionResult {
   buffer: Uint8Array;
@@ -292,7 +293,6 @@ export async function appendInvoicesToWorkbookBuffer(
         row.getCell(salesNetBalCol.colNumber).value = inv.networkBalance;
       }
 
-      // Any dynamic extra columns defined in future XLSX templates
       const extraSales = inv.extraColumnsData?.[salesSheetInfo.sheetName];
       if (extraSales) {
         for (const col of salesSheetInfo.columns) {
@@ -312,6 +312,7 @@ export async function appendInvoicesToWorkbookBuffer(
         sheetName: salesSheetInfo.sheetName,
         rowNumber: nextSalesRow,
         exportedAt: new Date().toISOString(),
+        invoiceUpdatedAt: inv.updatedAt,
       });
       nextSalesRow++;
       salesWritten++;
@@ -367,6 +368,7 @@ export async function appendInvoicesToWorkbookBuffer(
         sheetName: purchasesSheetInfo.sheetName,
         rowNumber: nextPurchasesRow,
         exportedAt: new Date().toISOString(),
+        invoiceUpdatedAt: inv.updatedAt,
       });
       nextPurchasesRow++;
       purchasesWritten++;
@@ -385,52 +387,177 @@ export async function appendInvoicesToWorkbookBuffer(
   };
 }
 
-/**
- * Single centralized export pipeline for an operation.
- * Always loads the verified official template (from IndexedDB or public/assets/templates/fawater_template.xlsx).
- */
-export async function exportOperationToExcel(operation: Operation): Promise<ExportExecutionResult> {
-  const template = await getOfficialTemplate();
-  const approvedInvoices = (operation.invoices || []).filter((inv) => inv.status === 'مكتملة');
-  if (approvedInvoices.length === 0) {
-    throw new Error('لا توجد فواتير معتمدة (مكتملة) جاهزة للتصدير. يرجى مراجعة الفواتير واعتمادها أولاً.');
+export interface OperationExportSummary {
+  newReadyInvoices: InvoiceRecord[];
+  modifiedReadyInvoices: InvoiceRecord[];
+  alreadyExportedUnchangedInvoices: InvoiceRecord[];
+  pendingInvoices: InvoiceRecord[];
+}
+
+export function getOperationExportSummary(
+  operation: Operation,
+  tracking: ExportTrackingRecord | null
+): OperationExportSummary {
+  const entryMap = new Map<string, ExportTrackingEntry>();
+  for (const e of tracking?.entries || []) {
+    entryMap.set(e.invoiceId, e);
+  }
+  const exportedIdSet = new Set(tracking?.exportedInvoiceIds || []);
+
+  const newReadyInvoices: InvoiceRecord[] = [];
+  const modifiedReadyInvoices: InvoiceRecord[] = [];
+  const alreadyExportedUnchangedInvoices: InvoiceRecord[] = [];
+  const pendingInvoices: InvoiceRecord[] = [];
+
+  for (const inv of operation.invoices || []) {
+    const isReady =
+      inv.status === 'مكتملة' &&
+      Boolean(inv.invoiceDate && inv.invoiceDate.trim()) &&
+      (inv.documentType === 'مبيعات' || inv.documentType === 'مشتريات');
+
+    if (!isReady) {
+      pendingInvoices.push(inv);
+      continue;
+    }
+
+    const prevEntry = entryMap.get(inv.id);
+    if (!prevEntry && !exportedIdSet.has(inv.id)) {
+      newReadyInvoices.push(inv);
+    } else if (
+      prevEntry &&
+      prevEntry.invoiceUpdatedAt &&
+      inv.updatedAt &&
+      inv.updatedAt > prevEntry.invoiceUpdatedAt
+    ) {
+      modifiedReadyInvoices.push(inv);
+    } else {
+      alreadyExportedUnchangedInvoices.push(inv);
+    }
   }
 
+  return {
+    newReadyInvoices,
+    modifiedReadyInvoices,
+    alreadyExportedUnchangedInvoices,
+    pendingInvoices,
+  };
+}
+
+/**
+ * Single centralized incremental export pipeline for an organization.
+ * Reads real export history BEFORE exporting to strictly block duplicate exports,
+ * allows modified-since-export invoices as an explicit new batch while keeping history intact,
+ * and registers export tracking ONLY after XLSX buffer creation succeeds.
+ */
+export async function exportOperationToExcel(
+  operation: Operation,
+  options?: { includeModified?: boolean }
+): Promise<ExportExecutionResult & { batchId: string; modifiedIncluded: number }> {
+  const includeModified = options?.includeModified ?? true;
+  const template = await getOfficialTemplate();
+  const tracking = await getExportTracking(operation.id);
+  const summary = getOperationExportSummary(operation, tracking);
+
+  const exportable = includeModified
+    ? [...summary.newReadyInvoices, ...summary.modifiedReadyInvoices]
+    : [...summary.newReadyInvoices];
+
+  if (exportable.length === 0) {
+    if (summary.alreadyExportedUnchangedInvoices.length > 0 && summary.pendingInvoices.length === 0) {
+      throw new Error(
+        `تم تصدير جميع الفواتير المعتمدة مسبقاً (${summary.alreadyExportedUnchangedInvoices.length} فاتورة) ولا توجد فواتير جديدة للتصدير دون تكرار. يمكنك إعادة تنزيل الملفات السابقة من سجل الدفعات أدناه.`
+      );
+    }
+    if (summary.alreadyExportedUnchangedInvoices.length > 0) {
+      throw new Error(
+        `لا توجد فواتير معتمدة جديدة للتصدير (${summary.alreadyExportedUnchangedInvoices.length} تم تصديرها مسبقاً، و${summary.pendingInvoices.length} بانتظار المراجعة/إدخال التاريخ).`
+      );
+    }
+    throw new Error(
+      'لا توجد فواتير معتمدة ومؤرخة جاهزة للتصدير. يرجى مراجعة الفواتير وإدخال التاريخ واعتمادها أولاً.'
+    );
+  }
+
+  // Strictly block unchanged previously-exported invoices at workbook writer level
+  const blockedIds = new Set(summary.alreadyExportedUnchangedInvoices.map((i) => i.id));
   const result = await appendInvoicesToWorkbookBuffer(
     template.buffer,
     operation.invoices || [],
     operation.id,
-    new Set()
+    blockedIds
   );
 
   if (result.exportedCount === 0) {
-    throw new Error('لم يتم تصدير أي فاتورة: تأكد من تحديد نوع كل فاتورة (مبيعات أو مشتريات) وإدخال التاريخ ثم اعتمادها.');
+    throw new Error('لم يتم تصدير أي فاتورة: تأكد من تحديد نوع كل فاتورة وإدخال التاريخ واعتمادها.');
   }
 
-  recordExportBatch(operation.id, template.sha256, result.entries);
+  const batchId = generateUuid();
+  const baseRaw = (operation.excelFileName || `${operation.name}_fawater.xlsx`).replace(/\.xlsx$/i, '');
+  const batchNumber = (tracking?.batches?.length || 0) + 1;
+  const fileName = batchNumber === 1 ? `${baseRaw}.xlsx` : `${baseRaw}_batch${batchNumber}.xlsx`;
 
-  const rawName = operation.excelFileName || `${operation.name}_fawater.xlsx`;
-  const fileName = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
+  const exactCopy = new Uint8Array(result.buffer.byteLength);
+  exactCopy.set(result.buffer);
+
+  // Record tracking + batch file ONLY after XLSX generation succeeded
+  await recordExportBatch({
+    batchId,
+    operationId: operation.id,
+    fileName,
+    templateSha256: template.sha256,
+    entries: result.entries,
+    salesCount: result.salesWritten,
+    purchasesCount: result.purchasesWritten,
+    xlsxBuffer: exactCopy.buffer,
+  });
 
   return {
     ...result,
+    batchId,
+    modifiedIncluded: includeModified ? summary.modifiedReadyInvoices.length : 0,
     fileName,
     templateSha256: template.sha256,
   };
 }
 
-export async function downloadOperationExcel(operation: Operation): Promise<ExportExecutionResult> {
-  const result = await exportOperationToExcel(operation);
-  const blob = new Blob([result.buffer.buffer as ArrayBuffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
+function triggerBrowserDownload(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = result.fileName;
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+export async function downloadOperationExcel(
+  operation: Operation,
+  options?: { includeModified?: boolean }
+): Promise<ExportExecutionResult & { batchId: string; modifiedIncluded: number }> {
+  const result = await exportOperationToExcel(operation, options);
+  const blob = new Blob([result.buffer.buffer as ArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerBrowserDownload(blob, result.fileName);
   return result;
+}
+
+export async function downloadSavedExportBatch(batchId: string, fallbackFileName?: string): Promise<void> {
+  const localFile = await getSavedExportFile(batchId);
+  if (localFile?.buffer) {
+    const blob = new Blob([localFile.buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    triggerBrowserDownload(blob, localFile.fileName || fallbackFileName || 'fawater_export.xlsx');
+    return;
+  }
+
+  const res = await fetch(`/api/supabase/exports/${encodeURIComponent(batchId)}/download`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'تعذر تنزيل ملف هذه الدفعة محلياً أو من التخزين السحابي.');
+  }
+  const blob = await res.blob();
+  triggerBrowserDownload(blob, fallbackFileName || 'fawater_export.xlsx');
 }

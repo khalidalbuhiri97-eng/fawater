@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { InvoiceRecord, Operation, DocumentType } from '../types';
 import { saveInvoiceImage } from '../services/dbService';
+import { generateUuid } from '../services/localStore';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -54,9 +55,9 @@ async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 2
 }
 
 function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): InvoiceRecord {
-  const today = new Date().toISOString().split('T')[0];
+  const nowIso = new Date().toISOString();
   return {
-    id: 'inv_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+    id: generateUuid(),
     invoiceNumber: '',
     invoiceDate: '', // Never auto-fill today's date
     documentType: docType,
@@ -75,9 +76,9 @@ function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): I
     items: [],
     customFieldsValues: {},
     extraColumnsData: {},
-    status: 'مكتملة',
-    createdAt: today,
-    updatedAt: today,
+    status: 'تحتاج مراجعة',
+    createdAt: nowIso.split('T')[0],
+    updatedAt: nowIso,
   };
 }
 
@@ -87,6 +88,10 @@ interface AiBatchResult {
   success: boolean;
   documentType?: DocumentType;
   error?: string;
+  file?: File;
+  base64?: string;
+  mimeType?: string;
+  retrying?: boolean;
 }
 
 export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
@@ -181,10 +186,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setErrorMsg('');
     setManualSuccessMsg('');
 
-    if (!manualInvoice.invoiceDate || !manualInvoice.invoiceDate.trim()) {
-      setErrorMsg('يرجى إدخال التاريخ (لا يتم تعيين تاريخ اليوم تلقائياً).');
-      return;
-    }
+    const hasDate = Boolean(manualInvoice.invoiceDate && manualInvoice.invoiceDate.trim());
 
     if (manualType === 'مبيعات') {
       const hasAnyValue =
@@ -211,38 +213,51 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
     setSavingManual(true);
     try {
-      const nowDate = new Date().toISOString().split('T')[0];
-      const newId = manualInvoice.id || 'inv_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const nowIso = new Date().toISOString();
+      const newId = manualInvoice.id || generateUuid();
 
       if (manualImage?.base64) {
-        await saveInvoiceImage(newId, manualImage.base64, manualImage.mimeType);
+        await saveInvoiceImage(newId, manualImage.base64, manualImage.mimeType, {
+          organizationId: operation.id,
+          fileName: manualImage.fileName,
+          enqueueSync: true,
+        });
       }
 
+      const nextStatus = hasDate ? 'مكتملة' : 'تحتاج مراجعة';
       const recordToSave: InvoiceRecord = {
         ...manualInvoice,
         id: newId,
+        organizationId: operation.id,
         documentType: manualType,
         entryMethod: 'manual',
-        status: 'مكتملة',
+        status: nextStatus,
         hasImage: Boolean(manualImage?.base64),
         imageBase64: manualImage?.base64,
         imageMimeType: manualImage?.mimeType,
         imageFileName: manualImage?.fileName,
-        updatedAt: nowDate,
+        syncStatus: 'pending',
+        updatedAt: nowIso,
       };
 
       const updatedInvoices = [recordToSave, ...(operation.invoices || [])];
       onUpdateOperation({
         ...operation,
         invoices: updatedInvoices,
-        updatedAt: nowDate,
+        updatedAt: nowIso,
       });
 
-      setManualSuccessMsg(
-        'تم حفظ الفاتورة يدوياً وتجهيزها للتصدير إلى ورقة "' +
-          (manualType === 'مبيعات' ? 'المبيعات' : 'المشتريات والموردين') +
-          '" في Excel بنجاح.'
-      );
+      if (hasDate) {
+        setManualSuccessMsg(
+          'تم حفظ الفاتورة يدوياً وتجهيزها للتصدير إلى ورقة "' +
+            (manualType === 'مبيعات' ? 'المبيعات' : 'المشتريات والموردين') +
+            '" في Excel بنجاح.'
+        );
+      } else {
+        setManualSuccessMsg(
+          'تم حفظ الفاتورة بحالة «تحتاج مراجعة» لعدم إدخال التاريخ — لن يتم تصديرها إلى Excel حتى إدخال التاريخ واعتمادها.'
+        );
+      }
       // Reset for next manual entry cleanly
       setManualInvoice(createEmptyManualInvoice(manualType));
       setManualImage(null);
@@ -295,18 +310,24 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     for (let i = 0; i < selectedFiles.length; i++) {
       setProgress((p) => ({ ...p, current: i + 1 }));
       const item = selectedFiles[i];
-      const invId = 'inv_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+      const invId = generateUuid();
       if (!firstId) firstId = invId;
-      const nowDate = new Date().toISOString().split('T')[0];
+      const nowIso = new Date().toISOString();
 
       try {
-        await saveInvoiceImage(invId, item.base64, item.mimeType);
+        await saveInvoiceImage(invId, item.base64, item.mimeType, {
+          organizationId: operation.id,
+          fileName: item.file.name,
+          fileSize: item.file.size,
+          enqueueSync: true,
+        });
       } catch (err) {
         console.error('IndexedDB save image error:', err);
       }
 
       const newRecord: InvoiceRecord = {
         id: invId,
+        organizationId: operation.id,
         invoiceNumber: '',
         invoiceDate: '',
         documentType: 'يحتاج تحديد النوع',
@@ -330,8 +351,10 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         imageBase64: item.base64,
         imageMimeType: item.mimeType,
         imageFileName: item.file.name,
-        createdAt: nowDate,
-        updatedAt: nowDate,
+        imageFileSize: item.file.size,
+        syncStatus: 'pending',
+        createdAt: nowIso.split('T')[0],
+        updatedAt: nowIso,
       };
 
       try {
@@ -339,6 +362,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            invoiceId: invId,
             imageBase64: item.base64,
             mimeType: item.mimeType,
             fileName: item.file.name,
@@ -375,8 +399,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           newRecord.networkSales = toOptionalNum(ext.networkSales);
           newRecord.notes = ext.notes || '';
           newRecord.items = Array.isArray(ext.items)
-            ? ext.items.map((it: any, idx: number) => ({
-                id: `${invId}_item_${idx}`,
+            ? ext.items.map((it: any) => ({
+                id: generateUuid(),
                 name: String(it?.name || ''),
                 code: it?.code ? String(it.code) : undefined,
                 quantity: toOptionalNum(it?.quantity),
@@ -409,6 +433,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             invoiceId: invId,
             success: false,
             error: errText,
+            file: item.file,
+            base64: item.base64,
+            mimeType: item.mimeType,
           });
         }
       } catch (err: any) {
@@ -421,6 +448,9 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           invoiceId: invId,
           success: false,
           error: errText,
+          file: item.file,
+          base64: item.base64,
+          mimeType: item.mimeType,
         });
       }
 
@@ -428,7 +458,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
       onUpdateOperation({
         ...operation,
         invoices: workingInvoices,
-        updatedAt: nowDate,
+        updatedAt: nowIso,
       });
 
       setProgress((p) => ({ ...p, success: successCount, failed: failedCount }));
@@ -445,8 +475,115 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
       onClose();
       onStartReview(firstId);
     } else {
-      // Keep modal open and show real error details when any file fails
       setAiResults(batchResults);
+    }
+  };
+
+  const handleRetryFailedAiItem = async (targetResult: AiBatchResult) => {
+    if (!targetResult.base64) return;
+    setAiResults((prev) =>
+      prev ? prev.map((r) => (r.invoiceId === targetResult.invoiceId ? { ...r, retrying: true } : r)) : null
+    );
+
+    try {
+      const res = await fetchWithRetry('/api/extract-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoiceId: targetResult.invoiceId,
+          imageBase64: targetResult.base64,
+          mimeType: targetResult.mimeType || 'image/jpeg',
+          fileName: targetResult.fileName,
+          customFields: operation.customFields,
+          organizationName: operation.name,
+          activityType: operation.activityType,
+        }),
+      });
+      const data = await res.json();
+      const nowIso = new Date().toISOString();
+
+      if (res.ok && data.success && data.data) {
+        const ext = data.data;
+        const classifiedType: DocumentType =
+          ext.documentType === 'مبيعات' || ext.documentType === 'مشتريات'
+            ? ext.documentType
+            : 'يحتاج تحديد النوع';
+
+        const updatedInvoices = (operation.invoices || []).map((inv) => {
+          if (inv.id !== targetResult.invoiceId) return inv;
+          return {
+            ...inv,
+            documentType: classifiedType,
+            classificationReason: ext.classificationReason || '',
+            invoiceNumber: ext.invoiceNumber || '',
+            invoiceDate: ext.invoiceDate || '',
+            day: ext.day || '',
+            issuerName: ext.issuerName || '',
+            clientName: ext.clientName || '',
+            issuerTaxId: ext.issuerTaxId || '',
+            clientTaxId: ext.clientTaxId || '',
+            currency: ext.currency || '',
+            subtotal: toOptionalNum(ext.subtotal),
+            taxAmount: toOptionalNum(ext.taxAmount),
+            taxRate: toOptionalNum(ext.taxRate),
+            discount: toOptionalNum(ext.discount),
+            grandTotal: toOptionalNum(ext.grandTotal),
+            cashSales: toOptionalNum(ext.cashSales),
+            networkSales: toOptionalNum(ext.networkSales),
+            notes: ext.notes || '',
+            items: Array.isArray(ext.items)
+              ? ext.items.map((it: any) => ({
+                  id: generateUuid(),
+                  name: String(it?.name || ''),
+                  code: it?.code ? String(it.code) : undefined,
+                  quantity: toOptionalNum(it?.quantity),
+                  unit: it?.unit ? String(it.unit) : undefined,
+                  unitPrice: toOptionalNum(it?.unitPrice),
+                  discount: toOptionalNum(it?.discount),
+                  tax: toOptionalNum(it?.tax),
+                  total: toOptionalNum(it?.total),
+                }))
+              : [],
+            customFieldsValues:
+              ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
+                ? ext.customFieldsExtracted
+                : {},
+            status: 'تحتاج مراجعة' as const,
+            errorMessage: undefined,
+            updatedAt: nowIso,
+          };
+        });
+
+        onUpdateOperation({ ...operation, invoices: updatedInvoices, updatedAt: nowIso });
+        setAiResults((prev) =>
+          prev
+            ? prev.map((r) =>
+                r.invoiceId === targetResult.invoiceId
+                  ? { ...r, success: true, documentType: classifiedType, error: undefined, retrying: false }
+                  : r
+              )
+            : null
+        );
+      } else {
+        const errText = data?.error || `فشل إعادة المحاولة (رمز ${res.status})`;
+        setAiResults((prev) =>
+          prev
+            ? prev.map((r) =>
+                r.invoiceId === targetResult.invoiceId ? { ...r, retrying: false, error: errText } : r
+              )
+            : null
+        );
+      }
+    } catch (err: any) {
+      setAiResults((prev) =>
+        prev
+          ? prev.map((r) =>
+              r.invoiceId === targetResult.invoiceId
+                ? { ...r, retrying: false, error: err?.message || 'فشل الاتصال بالخادم' }
+                : r
+            )
+          : null
+      );
     }
   };
 
@@ -718,6 +855,52 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     />
                   </div>
                 </div>
+
+                {(operation.customFields || []).length > 0 && (
+                  <div className="pt-3 border-t border-slate-200 space-y-2">
+                    <div className="text-xs font-bold text-slate-700">الحقول المخصصة للمؤسسة</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {operation.customFields.map((cf) => (
+                        <div key={cf.id}>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            {cf.name} {cf.required && <span className="text-red-500">*</span>}
+                          </label>
+                          {cf.type === 'قائمة خيارات' && cf.options?.length ? (
+                            <select
+                              value={manualInvoice.customFieldsValues?.[cf.id] ?? manualInvoice.customFieldsValues?.[cf.name] ?? ''}
+                              onChange={(e) =>
+                                setManualInvoice((p) => ({
+                                  ...p,
+                                  customFieldsValues: { ...p.customFieldsValues, [cf.id]: e.target.value },
+                                }))
+                              }
+                              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white text-slate-900"
+                            >
+                              <option value="">اختر...</option>
+                              {cf.options.map((opt) => (
+                                <option key={opt} value={opt}>
+                                  {opt}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={cf.type === 'تاريخ' ? 'date' : cf.type === 'رقم' || cf.type === 'مبلغ' || cf.type === 'نسبة' ? 'number' : 'text'}
+                              value={manualInvoice.customFieldsValues?.[cf.id] ?? manualInvoice.customFieldsValues?.[cf.name] ?? ''}
+                              onChange={(e) =>
+                                setManualInvoice((p) => ({
+                                  ...p,
+                                  customFieldsValues: { ...p.customFieldsValues, [cf.id]: e.target.value },
+                                }))
+                              }
+                              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs bg-white text-slate-900"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ) : extracting ? (
@@ -764,16 +947,28 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                             <div className="text-[11px] font-medium">{r.error}</div>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onClose();
-                            onStartReview(r.invoiceId);
-                          }}
-                          className="px-3 py-1 bg-white border border-slate-300 rounded-lg text-[11px] font-bold text-slate-800 hover:bg-slate-100 shrink-0"
-                        >
-                          مراجعة / تعديل
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {!r.success && r.base64 && (
+                            <button
+                              type="button"
+                              disabled={r.retrying}
+                              onClick={() => handleRetryFailedAiItem(r)}
+                              className="px-3 py-1 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-[11px] font-bold"
+                            >
+                              {r.retrying ? 'جاري الإعادة...' : 'إعادة المحاولة'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onClose();
+                              onStartReview(r.invoiceId);
+                            }}
+                            className="px-3 py-1 bg-white border border-slate-300 rounded-lg text-[11px] font-bold text-slate-800 hover:bg-slate-100"
+                          >
+                            مراجعة / تعديل
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

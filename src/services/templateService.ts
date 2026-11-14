@@ -1,4 +1,6 @@
 import ExcelJS from 'exceljs';
+import { saveTemplateVersionHistory } from './localStore';
+import { enqueueSyncTask } from './syncService';
 
 export const LOCAL_OFFICIAL_TEMPLATE_PATH = 'public/assets/templates/fawater_template.xlsx';
 export const LOCAL_OFFICIAL_TEMPLATE_URL = '/assets/templates/fawater_template.xlsx';
@@ -409,6 +411,20 @@ function logTemplateInfo(tpl: StoredOfficialTemplate) {
   console.info('SHA-256:', tpl.sha256);
   console.info('Sheets:', tpl.sheets);
   console.info('========================================');
+  saveTemplateVersionHistory({
+    sha256: tpl.sha256,
+    version: tpl.updatedAt.slice(0, 10),
+    source: tpl.source,
+    filePath: LOCAL_OFFICIAL_TEMPLATE_PATH,
+    isActive: true,
+    updatedAt: tpl.updatedAt,
+    sheets: tpl.sheets,
+  }).catch(() => {});
+  enqueueSyncTask('template', tpl.sha256, {
+    version: tpl.updatedAt.slice(0, 10),
+    filePath: LOCAL_OFFICIAL_TEMPLATE_PATH,
+    sha256: tpl.sha256,
+  }).catch(() => {});
 }
 
 export async function checkForTemplateUpdate(
