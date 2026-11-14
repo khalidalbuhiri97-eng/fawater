@@ -46,6 +46,7 @@ export interface InvoiceRecord {
   invoiceNumber: string;
   invoiceDate: string; // empty string when unreadable/missing
   documentType: DocumentType;
+  entryMethod?: 'ai' | 'manual';
   issuerName: string;
   clientName: string;
   issuerTaxId: string;
@@ -59,6 +60,8 @@ export interface InvoiceRecord {
   notes: string;
   items: InvoiceItem[];
   customFieldsValues: Record<string, any>;
+  // Dynamic extra columns read from XLSX template keyed by sheetName -> colLetter
+  extraColumnsData?: Record<string, Record<string, string | number | undefined>>;
   status: InvoiceStatus;
   hasImage?: boolean;
   imageBase64?: string; // hydrated from IndexedDB in memory; stripped before localStorage save

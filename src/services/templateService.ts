@@ -15,10 +15,16 @@ const LEGACY_STORAGE_KEYS = [
   'fawater_template_cache_v2',
 ];
 
+export type TemplateColumnKind = 'date' | 'text' | 'number' | 'formula';
+
 export interface TemplateColumnInfo {
   colNumber: number; // 1-indexed
   colLetter: string;
   name: string;
+  kind: TemplateColumnKind;
+  isFormula: boolean;
+  formulaHint?: string;
+  fieldKey: string;
 }
 
 export interface TemplateSheetInfo {
@@ -74,6 +80,80 @@ function getCellText(cell: ExcelJS.Cell): string {
   return String(v).trim();
 }
 
+function classifyColumnFromTemplate(
+  ws: ExcelJS.Worksheet,
+  dataStartRowNumber: number,
+  colNumber: number,
+  colLetter: string,
+  headerName: string
+): Omit<TemplateColumnInfo, 'colNumber' | 'colLetter' | 'name'> {
+  const sampleCell = ws.getRow(dataStartRowNumber).getCell(colNumber);
+  const cellVal = sampleCell.value as any;
+  const cellFormula =
+    cellVal && typeof cellVal === 'object' && ('formula' in cellVal || 'sharedFormula' in cellVal)
+      ? String(cellVal.formula || cellVal.sharedFormula || '')
+      : '';
+  const numFmt = String(sampleCell.numFmt || '').toLowerCase();
+
+  let fieldKey = `extra:${colLetter}`;
+  let isFormula = Boolean(cellFormula);
+  let formulaHint = cellFormula || undefined;
+
+  if (ws.name === 'المبيعات') {
+    if (headerName.includes('التاريخ')) fieldKey = 'invoiceDate';
+    else if (headerName.includes('اليوم')) fieldKey = 'day';
+    else if (
+      (headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) &&
+      !headerName.includes('رصيد')
+    ) {
+      fieldKey = 'cashSales';
+    } else if (headerName.includes('الشبكة') && !headerName.includes('رصيد')) {
+      fieldKey = 'networkSales';
+    } else if (headerName.includes('إجمالي المبيعات') || headerName.includes('الإجمالي')) {
+      fieldKey = 'formula:salesTotal';
+      isFormula = true;
+      formulaHint = formulaHint || 'المبيعات النقدية + الشبكة';
+    } else if (headerName.includes('رصيد الكاش')) fieldKey = 'cashBalance';
+    else if (headerName.includes('رصيد الصندوق')) fieldKey = 'cashBoxBalance';
+    else if (headerName.includes('رصيد الشبكة')) fieldKey = 'networkBalance';
+  } else if (ws.name === 'المشتريات والموردين') {
+    if (headerName.includes('التاريخ')) fieldKey = 'invoiceDate';
+    else if (headerName.includes('اسم المورد') || headerName.includes('المورد')) fieldKey = 'issuerName';
+    else if (headerName.includes('قبل الضريبة')) fieldKey = 'subtotal';
+    else if (
+      (headerName.includes('ضريبة القيمة المضافة') || headerName.includes('الضريبة')) &&
+      !headerName.includes('قبل الضريبة') &&
+      !headerName.includes('شامل الضريبة')
+    ) {
+      fieldKey = 'taxAmount';
+    } else if (headerName.includes('الإجمالي شامل الضريبة') || headerName.includes('الإجمالي')) {
+      fieldKey = 'formula:purchasesTotal';
+      isFormula = true;
+      formulaHint = formulaHint || 'المبلغ قبل الضريبة + ضريبة القيمة المضافة';
+    } else if (headerName.includes('الرصيد')) fieldKey = 'balance';
+  }
+
+  let kind: TemplateColumnKind = 'text';
+  if (isFormula) {
+    kind = 'formula';
+  } else if (numFmt.includes('yy') || numFmt.includes('mm-dd') || headerName.includes('التاريخ')) {
+    kind = 'date';
+  } else if (
+    numFmt.includes('#') ||
+    numFmt.includes('0.00') ||
+    headerName.includes('المبلغ') ||
+    headerName.includes('ضريبة') ||
+    headerName.includes('رصيد') ||
+    headerName.includes('الرصيد') ||
+    headerName.includes('النقدية') ||
+    headerName.includes('الشبكة')
+  ) {
+    kind = 'number';
+  }
+
+  return { kind, isFormula, formulaHint, fieldKey };
+}
+
 export async function computeSha256(buffer: ArrayBuffer): Promise<string> {
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -87,7 +167,7 @@ export function clearLegacyTemplateCaches(): void {
       localStorage.removeItem(key);
     }
   } catch {
-    // ignore storage errors
+    // ignore
   }
 }
 
@@ -137,7 +217,7 @@ async function writeStoredTemplate(record: StoredOfficialTemplate): Promise<void
 
 /**
  * Validates an XLSX buffer against the official Fawater 3-sheet structure
- * and dynamically extracts sheet headers, data start rows, and totals rows.
+ * and dynamically extracts sheet headers, column types/formulas, data start rows, and totals rows.
  */
 export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Promise<{
   workbook: ExcelJS.Workbook;
@@ -166,12 +246,12 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
 
   for (const ws of workbook.worksheets) {
     let headerRowNumber = 1;
-    let columns: TemplateColumnInfo[] = [];
+    let rawHeaders: { colNumber: number; colLetter: string; name: string }[] = [];
 
     const maxScan = Math.min(ws.rowCount || 15, 15);
     for (let r = 1; r <= maxScan; r++) {
       const row = ws.getRow(r);
-      const rowCols: TemplateColumnInfo[] = [];
+      const rowCols: { colNumber: number; colLetter: string; name: string }[] = [];
       row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
         const text = getCellText(cell);
         if (text) {
@@ -183,14 +263,13 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
         }
       });
 
-      // Header row in المبيعات (row 4, 8 cols) and المشتريات والموردين (row 3, 6 cols)
       if (ws.name === 'المبيعات') {
         const hasSalesHeaders =
           rowCols.some((c) => c.name.includes('التاريخ')) &&
           rowCols.some((c) => c.name.includes('المبيعات') || c.name.includes('الشبكة'));
         if (hasSalesHeaders) {
           headerRowNumber = r;
-          columns = rowCols;
+          rawHeaders = rowCols;
           break;
         }
       } else if (ws.name === 'المشتريات والموردين') {
@@ -199,22 +278,24 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
           rowCols.some((c) => c.name.includes('المورد'));
         if (hasPurchasesHeaders) {
           headerRowNumber = r;
-          columns = rowCols;
+          rawHeaders = rowCols;
           break;
         }
-      } else if (rowCols.length >= 2 && columns.length === 0) {
+      } else if (rowCols.length >= 2 && rawHeaders.length === 0) {
         headerRowNumber = r;
-        columns = rowCols;
+        rawHeaders = rowCols;
       }
     }
 
+    const dataStartRowNumber = headerRowNumber + 1;
+
     let totalsRowNumber: number | null = null;
     if (ws.name === 'المبيعات' || ws.name === 'المشتريات والموردين') {
-      if (columns.length < 4) {
+      if (rawHeaders.length < 4) {
         throw new Error(`ملف القالب غير متوافق: تعذر العثور على صف العناوين الصحيح في ورقة "${ws.name}".`);
       }
       const maxRow = Math.max(ws.rowCount || 50, 50);
-      for (let r = headerRowNumber + 1; r <= maxRow; r++) {
+      for (let r = dataStartRowNumber; r <= maxRow; r++) {
         const firstCell = getCellText(ws.getRow(r).getCell(1));
         if (firstCell.includes('الإجمالي') || firstCell.toLowerCase().includes('total')) {
           totalsRowNumber = r;
@@ -223,16 +304,29 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
       }
     }
 
+    const columns: TemplateColumnInfo[] = rawHeaders.map((h) => ({
+      ...h,
+      ...classifyColumnFromTemplate(ws, dataStartRowNumber, h.colNumber, h.colLetter, h.name),
+    }));
+
     sheets.push({
       sheetName: ws.name,
       headerRowNumber,
-      dataStartRowNumber: headerRowNumber + 1,
+      dataStartRowNumber,
       totalsRowNumber,
       columns,
     });
   }
 
   return { workbook, sheets };
+}
+
+export function getSheetSchemaByType(
+  sheets: TemplateSheetInfo[],
+  docType: 'مبيعات' | 'مشتريات'
+): TemplateSheetInfo | undefined {
+  const targetName = docType === 'مبيعات' ? 'المبيعات' : 'المشتريات والموردين';
+  return sheets.find((s) => s.sheetName === targetName);
 }
 
 async function fetchLocalAssetTemplate(): Promise<{
@@ -252,10 +346,6 @@ async function fetchLocalAssetTemplate(): Promise<{
 
 let loggedActiveTemplate = false;
 
-/**
- * Returns the active validated official template buffer + metadata.
- * Loads from IndexedDB when valid, otherwise initializes from public/assets/templates/fawater_template.xlsx.
- */
 export async function getOfficialTemplate(): Promise<StoredOfficialTemplate> {
   clearLegacyTemplateCaches();
 
@@ -263,7 +353,6 @@ export async function getOfficialTemplate(): Promise<StoredOfficialTemplate> {
   if (stored && stored.buffer) {
     try {
       const { sheets } = await validateAndInspectTemplateBuffer(stored.buffer);
-      // If template came from local asset, check if bundled asset on server changed
       if (stored.source === 'local' && typeof window !== 'undefined') {
         try {
           const local = await fetchLocalAssetTemplate();
@@ -282,7 +371,7 @@ export async function getOfficialTemplate(): Promise<StoredOfficialTemplate> {
             return refreshed;
           }
         } catch {
-          // If local fetch fails while offline, keep valid stored version
+          // keep valid stored version offline
         }
       }
 
@@ -293,7 +382,7 @@ export async function getOfficialTemplate(): Promise<StoredOfficialTemplate> {
       }
       return normalized;
     } catch {
-      // Stored template corrupted; reload from bundled official asset below
+      // reload from bundled asset below
     }
   }
 
@@ -322,13 +411,6 @@ function logTemplateInfo(tpl: StoredOfficialTemplate) {
   console.info('========================================');
 }
 
-/**
- * Checks GitHub for an updated official fawater_template.xlsx.
- * - Compares SHA-256 against active template.
- * - Skips saving if unchanged.
- * - Validates XLSX structure before replacing IndexedDB cache.
- * - Keeps last valid version intact on network failure or corrupt file.
- */
 export async function checkForTemplateUpdate(
   remoteUrl: string = GITHUB_OFFICIAL_TEMPLATE_URL
 ): Promise<TemplateCheckResult> {

@@ -31,6 +31,12 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'invoices' | 'custom_fields' | 'export'>('overview');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadInitialMode, setUploadInitialMode] = useState<'ai' | 'manual'>('ai');
+
+  const openUploadModal = (mode: 'ai' | 'manual') => {
+    setUploadInitialMode(mode);
+    setIsUploadModalOpen(true);
+  };
 
   const invoices = operation.invoices || [];
   const completedInvoices = invoices.filter((i) => i.status === 'مكتملة');
@@ -74,17 +80,23 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight mb-2">{operation.name}</h1>
           <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
-            منصة تحويل صور الفواتير ومستندات المؤسسة إلى ملف Excel رسمي موحد باستخدام الذكاء الاصطناعي.
+            منصة تحويل صور الفواتير ومستندات المؤسسة إلى ملف Excel رسمي موحد باستخدام الذكاء الاصطناعي أو الإدخال اليدوي.
           </p>
         </div>
 
-        <div className="flex items-center gap-3 relative z-10 shrink-0">
+        <div className="flex flex-wrap items-center gap-3 relative z-10 shrink-0">
           <button
-            onClick={() => setIsUploadModalOpen(true)}
+            onClick={() => openUploadModal('manual')}
+            className="flex items-center gap-2 px-5 py-3.5 bg-slate-800 hover:bg-slate-700 text-white rounded-2xl font-bold border border-slate-600 shadow-md transition"
+          >
+            <span>إدخال يدوي</span>
+          </button>
+          <button
+            onClick={() => openUploadModal('ai')}
             className="flex items-center gap-2 px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg transition transform hover:-translate-y-0.5"
           >
             <Upload className="w-5 h-5" />
-            <span>رفع فواتير جديدة</span>
+            <span>استخراج بالذكاء الاصطناعي</span>
           </button>
         </div>
       </div>
@@ -273,12 +285,20 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
                 <p className="text-slate-500 text-xs max-w-sm mx-auto">
                   ارفع صور فواتيرك ومستنداتك واستخرج بياناتها وتصنيفها تلقائياً باستخدام Gemini Vision.
                 </p>
-                <button
-                  onClick={() => setIsUploadModalOpen(true)}
-                  className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold hover:bg-emerald-500 transition shadow-md"
-                >
-                  رفع أول فاتورة
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    onClick={() => openUploadModal('manual')}
+                    className="px-5 py-3 bg-slate-900 text-white rounded-2xl text-sm font-bold hover:bg-slate-800 transition shadow-sm"
+                  >
+                    إدخال يدوي
+                  </button>
+                  <button
+                    onClick={() => openUploadModal('ai')}
+                    className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold hover:bg-emerald-500 transition shadow-md"
+                  >
+                    استخراج بالذكاء الاصطناعي
+                  </button>
+                </div>
               </div>
             ) : (
               <InvoicesTable
@@ -307,6 +327,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
 
       <BatchUploadModal
         isOpen={isUploadModalOpen}
+        initialMode={uploadInitialMode}
         onClose={() => setIsUploadModalOpen(false)}
         operation={operation}
         onUpdateOperation={onUpdateOperation}

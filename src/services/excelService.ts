@@ -292,6 +292,19 @@ export async function appendInvoicesToWorkbookBuffer(
         row.getCell(salesNetBalCol.colNumber).value = inv.networkBalance;
       }
 
+      // Any dynamic extra columns defined in future XLSX templates
+      const extraSales = inv.extraColumnsData?.[salesSheetInfo.sheetName];
+      if (extraSales) {
+        for (const col of salesSheetInfo.columns) {
+          if (col.fieldKey.startsWith('extra:')) {
+            const val = extraSales[col.colLetter];
+            if (val !== undefined && val !== '') {
+              row.getCell(col.colNumber).value = val;
+            }
+          }
+        }
+      }
+
       seenIds.add(inv.id);
       entries.push({
         invoiceId: inv.id,
@@ -333,6 +346,18 @@ export async function appendInvoicesToWorkbookBuffer(
       }
       if (purBalCol && inv.balance !== undefined) {
         row.getCell(purBalCol.colNumber).value = inv.balance;
+      }
+
+      const extraPurchases = inv.extraColumnsData?.[purchasesSheetInfo.sheetName];
+      if (extraPurchases) {
+        for (const col of purchasesSheetInfo.columns) {
+          if (col.fieldKey.startsWith('extra:')) {
+            const val = extraPurchases[col.colLetter];
+            if (val !== undefined && val !== '') {
+              row.getCell(col.colNumber).value = val;
+            }
+          }
+        }
       }
 
       seenIds.add(inv.id);

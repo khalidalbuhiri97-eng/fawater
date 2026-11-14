@@ -10,9 +10,16 @@ import {
   CheckCircle2,
   AlertCircle,
   AlertTriangle,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { InvoiceRecord, Operation, DocumentType } from '../types';
-import { getInvoiceImage } from '../services/dbService';
+import { getInvoiceImage, saveInvoiceImage } from '../services/dbService';
+import {
+  getOfficialTemplate,
+  getSheetSchemaByType,
+  TemplateSheetInfo,
+} from '../services/templateService';
+import { DynamicTemplateFields } from './DynamicTemplateFields';
 
 interface ReviewWorkspaceProps {
   operation: Operation;
@@ -25,12 +32,6 @@ interface ReviewWorkspaceProps {
 function toOptionalNum(val: any): number | undefined {
   if (val === null || val === undefined || val === '') return undefined;
   const num = Number(val);
-  return Number.isFinite(num) ? num : undefined;
-}
-
-function parseNumericInput(raw: string): number | undefined {
-  if (raw.trim() === '') return undefined;
-  const num = parseFloat(raw);
   return Number.isFinite(num) ? num : undefined;
 }
 
@@ -50,8 +51,15 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
   const [zoom, setZoom] = useState(1);
   const [extractingSingle, setExtractingSingle] = useState(false);
+  const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
   const [hydratedImages, setHydratedImages] = useState<Record<string, { base64: string; mimeType: string }>>({});
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    getOfficialTemplate()
+      .then((tpl) => setTemplateSheets(tpl.sheets))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,7 +95,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     return (
       <div className="max-w-7xl mx-auto px-4 py-16 text-center">
         <h3 className="text-xl font-bold text-slate-800 mb-2">لا توجد فواتير للمراجعة</h3>
-        <p className="text-slate-500 mb-6">يرجى رفع صور أو فواتير جديدة أولاً.</p>
+        <p className="text-slate-500 mb-6">يرجى رفع صور أو إضافة فواتير جديدة أولاً.</p>
         <button
           onClick={onBackToDashboard}
           className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold shadow-md hover:bg-emerald-500 transition"
@@ -109,6 +117,9 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const missingCashNetworkSplit =
     isSales && currentInvoice.cashSales === undefined && currentInvoice.networkSales === undefined;
 
+  const activeSheetInfo =
+    isSales || isPurchases ? getSheetSchemaByType(templateSheets, isSales ? 'مبيعات' : 'مشتريات') : undefined;
+
   const updateInvoiceInList = (updatedInv: InvoiceRecord) => {
     const newInvoices = invoices.map((inv) => (inv.id === updatedInv.id ? updatedInv : inv));
     onUpdateOperation({
@@ -118,35 +129,20 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     });
   };
 
+  const handleUpdateCurrentInvoice = (updater: (prev: InvoiceRecord) => InvoiceRecord) => {
+    const next = updater(currentInvoice);
+    updateInvoiceInList(next);
+  };
+
   const handleFieldChange = (field: keyof InvoiceRecord, value: any) => {
-    const updated: InvoiceRecord = {
+    updateInvoiceInList({
       ...currentInvoice,
       [field]: value,
       updatedAt: new Date().toISOString().split('T')[0],
-    };
-
-    if (updated.documentType === 'مبيعات') {
-      if (field === 'cashSales' || field === 'networkSales') {
-        const cash = field === 'cashSales' ? value : currentInvoice.cashSales;
-        const net = field === 'networkSales' ? value : currentInvoice.networkSales;
-        if (cash !== undefined || net !== undefined) {
-          updated.grandTotal = Number(cash ?? 0) + Number(net ?? 0);
-        }
-      }
-    } else if (updated.documentType === 'مشتريات') {
-      if (field === 'subtotal' || field === 'taxAmount') {
-        const sub = field === 'subtotal' ? value : currentInvoice.subtotal;
-        const tax = field === 'taxAmount' ? value : currentInvoice.taxAmount;
-        if (sub !== undefined || tax !== undefined) {
-          updated.grandTotal = Number(sub ?? 0) + Number(tax ?? 0);
-        }
-      }
-    }
-
-    updateInvoiceInList(updated);
+    });
   };
 
-  const handleApproveAndNext = () => {
+  const handleApproveAndNext = async () => {
     if (needsType) {
       setMsg({ type: 'error', text: 'يرجى تحديد نوع الفاتورة (مبيعات أو مشتريات) قبل الاعتماد.' });
       return;
@@ -155,28 +151,47 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       setMsg({ type: 'error', text: 'يرجى إدخال تاريخ الفاتورة قبل الاعتماد (لا يتم افتراض تاريخ تلقائي).' });
       return;
     }
-    if (isSales && missingCashNetworkSplit) {
-      setMsg({
-        type: 'error',
-        text: 'يرجى إدخال قيمة المبيعات النقدية (الكاش) أو الشبكة على الأقل قبل اعتماد فاتورة المبيعات.',
-      });
-      return;
+    if (isSales) {
+      const hasAnySales =
+        currentInvoice.cashSales !== undefined ||
+        currentInvoice.networkSales !== undefined ||
+        currentInvoice.cashBalance !== undefined ||
+        currentInvoice.cashBoxBalance !== undefined ||
+        currentInvoice.networkBalance !== undefined;
+      if (!hasAnySales) {
+        setMsg({
+          type: 'error',
+          text: 'يرجى إدخال قيمة المبيعات النقدية (الكاش) أو الشبكة على الأقل قبل اعتماد فاتورة المبيعات.',
+        });
+        return;
+      }
     }
 
-    const updated: InvoiceRecord = {
-      ...currentInvoice,
-      status: 'مكتملة',
-      updatedAt: new Date().toISOString().split('T')[0],
-    };
-    updateInvoiceInList(updated);
-    setMsg({
-      type: 'success',
-      text: 'تم اعتماد الفاتورة وحفظ بياناتها؛ يمكنك تنزيل ملف Excel المحدث من مركز التصدير.',
-    });
-    setTimeout(() => setMsg(null), 3500);
+    try {
+      if (activeImg?.base64) {
+        await saveInvoiceImage(currentInvoice.id, activeImg.base64, activeImg.mimeType);
+      }
 
-    if (currentIndex < invoices.length - 1) {
-      onSelectInvoice(invoices[currentIndex + 1].id);
+      const updated: InvoiceRecord = {
+        ...currentInvoice,
+        status: 'مكتملة',
+        hasImage: Boolean(activeImg?.base64 || currentInvoice.hasImage),
+        updatedAt: new Date().toISOString().split('T')[0],
+      };
+      updateInvoiceInList(updated);
+      setMsg({
+        type: 'success',
+        text: 'تم اعتماد الفاتورة وحفظ جميع حقولها فعلياً؛ وهي جاهزة الآن للتصدير إلى Excel.',
+      });
+
+      if (currentIndex < invoices.length - 1) {
+        onSelectInvoice(invoices[currentIndex + 1].id);
+      }
+    } catch (err: any) {
+      setMsg({
+        type: 'error',
+        text: err?.message || 'فشل حفظ الفاتورة في التخزين المحلي.',
+      });
     }
   };
 
@@ -192,6 +207,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         body: JSON.stringify({
           imageBase64: activeImg.base64,
           mimeType: activeImg.mimeType || 'image/jpeg',
+          fileName: currentInvoice.imageFileName,
           customFields: operation.customFields,
           organizationName: operation.name,
           activityType: operation.activityType,
@@ -259,18 +275,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     }
   };
 
-  const salesCalculatedTotal =
-    currentInvoice.cashSales !== undefined || currentInvoice.networkSales !== undefined
-      ? Number(currentInvoice.cashSales ?? 0) + Number(currentInvoice.networkSales ?? 0)
-      : undefined;
-
-  const purchasesCalculatedTotal =
-    currentInvoice.subtotal !== undefined || currentInvoice.taxAmount !== undefined
-      ? Number(currentInvoice.subtotal ?? 0) + Number(currentInvoice.taxAmount ?? 0)
-      : currentInvoice.grandTotal;
-
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Top Header & Navigation */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
         <div className="flex items-center gap-3">
@@ -295,6 +301,11 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           >
             {currentInvoice.status}
           </span>
+          {currentInvoice.entryMethod && (
+            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700">
+              {currentInvoice.entryMethod === 'manual' ? 'إدخال يدوي' : 'ذكاء اصطناعي'}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -354,7 +365,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           {missingDate && (
             <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>تاريخ الفاتورة غير مقروء أو غير موجود في المستند. يرجى إدخال التاريخ يدوياً قبل الاعتماد.</span>
+              <span>تاريخ الفاتورة غير مقروء أو غير موجود. يرجى إدخال التاريخ يدوياً قبل الاعتماد.</span>
             </div>
           )}
           {missingCashNetworkSplit && (
@@ -372,84 +383,73 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Main Split Workspace */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Side: Invoice Image Viewer */}
-        <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden sticky top-20">
-          <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
-            <span className="text-xs font-bold truncate max-w-[220px]">
-              {currentInvoice.imageFileName || 'صورة المستند'}
+      {/* 1. Always-visible Image Preview Card ABOVE fields */}
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="bg-slate-900 text-white px-5 py-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ImageIcon className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs font-bold truncate max-w-[260px]">
+              {currentInvoice.imageFileName || 'معاينة المستند'}
             </span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setZoom((z) => Math.min(z + 0.25, 3))}
-                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
-                title="تكبير"
-              >
-                <ZoomIn className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setZoom((z) => Math.max(z - 0.25, 0.5))}
-                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
-                title="تصغير"
-              >
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setZoom(1)}
-                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
-                title="إعادة ضبط"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-            </div>
           </div>
-
-          <div className="p-4 bg-slate-950 flex items-center justify-center min-h-[460px] max-h-[580px] overflow-auto relative">
-            {activeImg?.base64 ? (
-              activeImg.mimeType === 'application/pdf' ? (
-                <embed
-                  src={`data:application/pdf;base64,${activeImg.base64}`}
-                  type="application/pdf"
-                  className="w-full h-[520px] rounded-lg"
-                />
-              ) : (
-                <img
-                  src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`}
-                  alt="معاينة الفاتورة"
-                  style={{ transform: `scale(${zoom})`, transition: 'transform 0.2s ease' }}
-                  className="max-h-[530px] object-contain rounded-lg shadow-md"
-                />
-              )
-            ) : (
-              <div className="text-slate-500 text-sm">لا توجد صورة مرفقة لهذه الفاتورة</div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setZoom((z) => Math.min(z + 0.25, 3))}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+              title="تكبير"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setZoom((z) => Math.max(z - 0.25, 0.5))}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+              title="تصغير"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setZoom(1)}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+              title="إعادة ضبط"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+            {activeImg?.base64 && (
+              <button
+                onClick={handleRunAiForThis}
+                disabled={extractingSingle}
+                className="mr-2 flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white rounded-lg text-xs font-bold transition"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{extractingSingle ? 'جاري الاستخراج...' : 'قراءة بالذكاء الاصطناعي'}</span>
+              </button>
             )}
           </div>
+        </div>
 
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
-            <button
-              onClick={handleRunAiForThis}
-              disabled={extractingSingle || !activeImg?.base64}
-              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold transition shadow-sm"
-            >
-              <Sparkles className="w-4 h-4" />
-              <span>{extractingSingle ? 'جاري الاستخراج...' : 'إعادة الاستخراج بالذكاء الاصطناعي'}</span>
-            </button>
+        <div className="p-4 bg-slate-950 flex items-center justify-center min-h-[260px] max-h-[440px] overflow-auto">
+          {activeImg?.base64 ? (
+            activeImg.mimeType === 'application/pdf' ? (
+              <embed
+                src={`data:application/pdf;base64,${activeImg.base64}`}
+                type="application/pdf"
+                className="w-full h-[380px] rounded-lg"
+              />
+            ) : (
+              <img
+                src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`}
+                alt="معاينة الفاتورة"
+                style={{ transform: `scale(${zoom})`, transition: 'transform 0.2s ease' }}
+                className="max-h-[400px] object-contain rounded-lg shadow-md"
+              />
+            )
+          ) : (
+            <div className="text-slate-400 text-sm py-8">لا توجد صورة مرفقة (سجل إدخال يدوي بدون صورة)</div>
+          )}
+        </div>
 
-            <span
-              className={`px-3 py-1 rounded-full text-xs font-bold ${
-                needsType
-                  ? 'bg-amber-100 text-amber-800'
-                  : isSales
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : 'bg-blue-100 text-blue-800'
-              }`}
-            >
-              {currentInvoice.documentType}
-            </span>
-          </div>
-
-          {/* Thumbnails strip */}
+        {/* Thumbnails strip */}
+        {invoices.length > 1 && (
           <div className="p-3 bg-white border-t border-slate-200 flex gap-2 overflow-x-auto">
             {invoices.map((inv, idx) => {
               const thumb = inv.imageBase64
@@ -480,298 +480,128 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               );
             })}
           </div>
+        )}
+      </div>
+
+      {/* 2. ALL Excel Template Fields BELOW Preview */}
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+          <div>
+            <h3 className="font-extrabold text-lg text-slate-900">
+              {isSales
+                ? 'حقول ورقة المبيعات (من قالب Excel الرسمي)'
+                : isPurchases
+                ? 'حقول ورقة المشتريات والموردين (من قالب Excel الرسمي)'
+                : 'تحديد نوع الفاتورة لعرض حقول Excel'}
+            </h3>
+            <p className="text-xs text-slate-500">
+              جميع الأعمدة مقروءة ديناميكياً من القالب الرسمي وتحتفظ بقيمها أثناء المراجعة
+            </p>
+          </div>
+          <button
+            onClick={handleApproveAndNext}
+            className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-bold shadow-md transition"
+          >
+            <Save className="w-4 h-4" />
+            <span>حفظ واعتماد الفاتورة لـ Excel</span>
+          </button>
         </div>
 
-        {/* Right Side: Editable Structured Form */}
-        <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
-            <div>
-              <h3 className="font-extrabold text-lg text-slate-900">
-                {isSales
-                  ? 'مراجعة بيانات المبيعات'
-                  : isPurchases
-                  ? 'مراجعة بيانات المشتريات والموردين'
-                  : 'مراجعة وتحديد نوع الفاتورة'}
-              </h3>
-              <p className="text-xs text-slate-500">
-                حقول الإدخال مطابقة لأعمدة قالب Excel الرسمي دون أي افتراضات تلقائية
-              </p>
-            </div>
-            <button
-              onClick={handleApproveAndNext}
-              className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-bold shadow-md transition"
-            >
-              <Save className="w-4 h-4" />
-              <span>اعتماد الفاتورة والتالية</span>
-            </button>
+        {/* Document Type Selector */}
+        <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="text-xs font-bold text-slate-800">تصنيف الفاتورة (الورقة المستهدفة في Excel):</label>
+            {currentInvoice.classificationReason && (
+              <span className="text-[11px] text-slate-500">سبب التصنيف: {currentInvoice.classificationReason}</span>
+            )}
           </div>
-
-          {/* Classification selector */}
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-bold text-slate-800">تصنيف الفاتورة (الورقة المستهدفة في Excel):</label>
-              {currentInvoice.classificationReason && (
-                <span className="text-[11px] text-slate-500">سبب التصنيف: {currentInvoice.classificationReason}</span>
-              )}
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {(['مبيعات', 'مشتريات', 'يحتاج تحديد النوع'] as DocumentType[]).map((typeOpt) => (
-                <button
-                  key={typeOpt}
-                  type="button"
-                  onClick={() => handleFieldChange('documentType', typeOpt)}
-                  className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition ${
-                    currentInvoice.documentType === typeOpt
-                      ? typeOpt === 'يحتاج تحديد النوع'
-                        ? 'bg-amber-100 border-amber-500 text-amber-900'
-                        : 'bg-emerald-600 border-emerald-600 text-white'
-                      : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  {typeOpt}
-                </button>
-              ))}
-            </div>
+          <div className="grid grid-cols-3 gap-2">
+            {(['مبيعات', 'مشتريات', 'يحتاج تحديد النوع'] as DocumentType[]).map((typeOpt) => (
+              <button
+                key={typeOpt}
+                type="button"
+                onClick={() => handleFieldChange('documentType', typeOpt)}
+                className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition ${
+                  currentInvoice.documentType === typeOpt
+                    ? typeOpt === 'يحتاج تحديد النوع'
+                      ? 'bg-amber-100 border-amber-500 text-amber-900'
+                      : 'bg-emerald-600 border-emerald-600 text-white'
+                    : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                {typeOpt}
+              </button>
+            ))}
           </div>
+        </div>
 
-          {isSales ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  التاريخ <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={currentInvoice.invoiceDate || ''}
-                  onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
-                  className={`w-full px-3.5 py-2.5 rounded-xl border text-xs outline-none bg-white text-slate-800 font-medium ${
-                    missingDate ? 'border-amber-400 bg-amber-50/30' : 'border-slate-300'
-                  }`}
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">اليوم</label>
-                <input
-                  type="text"
-                  value={currentInvoice.day || ''}
-                  onChange={(e) => handleFieldChange('day', e.target.value)}
-                  placeholder="مثال: السبت"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">المبيعات النقدية (الكاش)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.cashSales ?? ''}
-                  onChange={(e) => handleFieldChange('cashSales', parseNumericInput(e.target.value))}
-                  placeholder="غير محدد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">الشبكة (POS)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.networkSales ?? ''}
-                  onChange={(e) => handleFieldChange('networkSales', parseNumericInput(e.target.value))}
-                  placeholder="غير محدد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
-                />
-              </div>
-
-              <div className="sm:col-span-2 bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200 flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-bold text-emerald-900 mb-1">
-                    إجمالي المبيعات (يُحسب بمعادلة Excel: =C+D)
-                  </label>
-                  <div className="text-xl font-extrabold text-emerald-800">
-                    {salesCalculatedTotal !== undefined ? `${salesCalculatedTotal.toFixed(2)}` : 'بانتظار إدخال الكاش/الشبكة'}
-                  </div>
-                </div>
-                {currentInvoice.grandTotal !== undefined && (
-                  <div className="text-left text-xs text-slate-600">
-                    <span className="block text-[11px] text-slate-500">الإجمالي المستخرج من الفاتورة:</span>
-                    <span className="font-bold">{currentInvoice.grandTotal.toFixed(2)} {currentInvoice.currency}</span>
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الكاش (اختياري)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.cashBalance ?? ''}
-                  onChange={(e) => handleFieldChange('cashBalance', parseNumericInput(e.target.value))}
-                  placeholder="يُترك فارغاً إذا لم يوجد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الصندوق (اختياري)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.cashBoxBalance ?? ''}
-                  onChange={(e) => handleFieldChange('cashBoxBalance', parseNumericInput(e.target.value))}
-                  placeholder="يُترك فارغاً إذا لم يوجد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">رصيد الشبكة / البنك (اختياري)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.networkBalance ?? ''}
-                  onChange={(e) => handleFieldChange('networkBalance', parseNumericInput(e.target.value))}
-                  placeholder="يُترك فارغاً إذا لم يوجد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  التاريخ <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={currentInvoice.invoiceDate || ''}
-                  onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
-                  className={`w-full px-3.5 py-2.5 rounded-xl border text-xs outline-none bg-white text-slate-800 font-medium ${
-                    missingDate ? 'border-amber-400 bg-amber-50/30' : 'border-slate-300'
-                  }`}
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">اسم المورد</label>
-                <input
-                  type="text"
-                  value={currentInvoice.issuerName || ''}
-                  onChange={(e) => handleFieldChange('issuerName', e.target.value)}
-                  placeholder="اسم المورد أو الشركة"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">المبلغ قبل الضريبة</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.subtotal ?? ''}
-                  onChange={(e) => handleFieldChange('subtotal', parseNumericInput(e.target.value))}
-                  placeholder="غير محدد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">ضريبة القيمة المضافة (VAT)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.taxAmount ?? ''}
-                  onChange={(e) => handleFieldChange('taxAmount', parseNumericInput(e.target.value))}
-                  placeholder="غير محدد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800 font-bold"
-                />
-              </div>
-
-              <div className="sm:col-span-2 bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200 flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-bold text-emerald-900 mb-1">
-                    الإجمالي شامل الضريبة (يُحسب بمعادلة Excel: =C+D)
-                  </label>
-                  <div className="text-xl font-extrabold text-emerald-800">
-                    {purchasesCalculatedTotal !== undefined ? `${purchasesCalculatedTotal.toFixed(2)}` : 'غير محدد'}
-                  </div>
-                </div>
-                {currentInvoice.taxRate !== undefined && (
-                  <span className="text-xs font-semibold text-emerald-900">
-                    نسبة الضريبة المستخرجة: {currentInvoice.taxRate}%
-                  </span>
-                )}
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">الرصيد (اختياري)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={currentInvoice.balance ?? ''}
-                  onChange={(e) => handleFieldChange('balance', parseNumericInput(e.target.value))}
-                  placeholder="يُترك فارغاً إذا لم يوجد"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Extra extracted metadata */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-500 mb-1">رقم الفاتورة</label>
-              <input
-                type="text"
-                value={currentInvoice.invoiceNumber || ''}
-                onChange={(e) => handleFieldChange('invoiceNumber', e.target.value)}
-                placeholder="—"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-500 mb-1">اسم العميل</label>
-              <input
-                type="text"
-                value={currentInvoice.clientName || ''}
-                onChange={(e) => handleFieldChange('clientName', e.target.value)}
-                placeholder="—"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-500 mb-1">الرقم الضريبي</label>
-              <input
-                type="text"
-                value={currentInvoice.issuerTaxId || ''}
-                onChange={(e) => handleFieldChange('issuerTaxId', e.target.value)}
-                placeholder="—"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-500 mb-1">العملة</label>
-              <input
-                type="text"
-                value={currentInvoice.currency || ''}
-                onChange={(e) => handleFieldChange('currency', e.target.value)}
-                placeholder="—"
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
-              />
-            </div>
+        {/* Dynamic Excel Fields */}
+        {activeSheetInfo ? (
+          <DynamicTemplateFields
+            sheetInfo={activeSheetInfo}
+            invoice={currentInvoice}
+            onUpdateInvoice={handleUpdateCurrentInvoice}
+          />
+        ) : needsType ? (
+          <div className="p-6 text-center rounded-2xl border border-dashed border-amber-300 bg-amber-50/40 text-xs text-amber-900">
+            يرجى اختيار <strong>مبيعات</strong> أو <strong>مشتريات</strong> أعلاه لعرض جميع أعمدة ورقة Excel المقابلة.
           </div>
+        ) : (
+          <div className="text-xs text-slate-500 py-4 text-center">جاري تحميل حقول القالب الرسمي...</div>
+        )}
 
+        {/* Secondary Metadata */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-slate-100">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">ملاحظات إضافية</label>
-            <textarea
-              rows={2}
-              value={currentInvoice.notes || ''}
-              onChange={(e) => handleFieldChange('notes', e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">رقم الفاتورة</label>
+            <input
+              type="text"
+              value={currentInvoice.invoiceNumber || ''}
+              onChange={(e) => handleFieldChange('invoiceNumber', e.target.value)}
+              placeholder="—"
+              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
             />
           </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">اسم العميل</label>
+            <input
+              type="text"
+              value={currentInvoice.clientName || ''}
+              onChange={(e) => handleFieldChange('clientName', e.target.value)}
+              placeholder="—"
+              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">الرقم الضريبي</label>
+            <input
+              type="text"
+              value={currentInvoice.issuerTaxId || ''}
+              onChange={(e) => handleFieldChange('issuerTaxId', e.target.value)}
+              placeholder="—"
+              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">العملة</label>
+            <input
+              type="text"
+              value={currentInvoice.currency || ''}
+              onChange={(e) => handleFieldChange('currency', e.target.value)}
+              placeholder="—"
+              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 text-slate-800"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">ملاحظات إضافية</label>
+          <textarea
+            rows={2}
+            value={currentInvoice.notes || ''}
+            onChange={(e) => handleFieldChange('notes', e.target.value)}
+            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+          />
         </div>
       </div>
     </div>

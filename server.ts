@@ -1,5 +1,5 @@
 import express from 'express';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -46,34 +46,70 @@ function normalizeDocumentType(raw: any): 'مبيعات' | 'مشتريات' | '�
   return 'يحتاج تحديد النوع';
 }
 
+function normalizeMimeType(mimeType?: string, fileName?: string): string {
+  const m = String(mimeType || '').trim().toLowerCase();
+  if (m === 'image/jpg') return 'image/jpeg';
+  if (m === 'image/jpeg' || m === 'image/png' || m === 'image/webp' || m === 'application/pdf') {
+    return m;
+  }
+  const ext = String(fileName || '').split('.').pop()?.toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'pdf') return 'application/pdf';
+  return 'image/jpeg';
+}
+
+function stripDataUrlPrefix(base64: string): string {
+  const idx = base64.indexOf(',');
+  if (base64.startsWith('data:') && idx !== -1) {
+    return base64.slice(idx + 1).trim();
+  }
+  return base64.trim();
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  const ai = new GoogleGenAI({
-    apiKey: apiKey || 'dummy-key',
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-
   app.post('/api/extract-invoice', async (req, res) => {
     try {
-      const { imageBase64, mimeType, customFields, organizationName, activityType } = req.body;
-      if (!imageBase64) {
+      const apiKey = process.env.GEMINI_API_KEY;
+      const { imageBase64, mimeType, fileName, customFields, organizationName, activityType } = req.body || {};
+
+      if (!imageBase64 || typeof imageBase64 !== 'string') {
         return res.status(400).json({ success: false, error: 'صورة الفاتورة مطلوبة (imageBase64 missing)' });
       }
 
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
         return res.status(500).json({
           success: false,
-          error: 'مفتاح Gemini API غير مهيأ (GEMINI_API_KEY). يرجى تعيينه في إعدادات الأسرار (Secrets).',
+          error: 'مفتاح Gemini API غير مهيأ (GEMINI_API_KEY). يرجى تعيينه في إعدادات الأسرار (Settings > Secrets).',
         });
       }
+
+      const cleanBase64 = stripDataUrlPrefix(imageBase64);
+      const safeMimeType = normalizeMimeType(mimeType, fileName);
+
+      if (cleanBase64.length < 32) {
+        return res.status(400).json({
+          success: false,
+          error: 'محتوى الصورة المرسل غير صالح أو فارغ.',
+        });
+      }
+
+      console.info(
+        `[/api/extract-invoice] Receiving image payload (${safeMimeType}, ${cleanBase64.length} base64 chars) for "${organizationName || 'N/A'}"`
+      );
+
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
 
       const orgContext = organizationName
         ? `اسم المؤسسة صاحبة الحساب في التطبيق: "${organizationName}" (${activityType || 'نشاط تجاري'}).`
@@ -81,39 +117,39 @@ async function startServer() {
 
       const prompt = `أنت خبير محاسبي ومستخرج بيانات ذكي للفواتير والمستندات التجارية.
 ${orgContext}
-قم بتحليل صورة الفاتورة أو المستند المرفق بدقة واستخرج البيانات بصيغة JSON صالحة فقط بدون أي نص إضافي أو علامات Markdown.
+قم بقراءة وتحليل محتوى صورة/مستند الفاتورة المرفق فعلياً واستخرج البيانات بدقة بصيغة JSON صالحة فقط.
 
-الحقول المطلوب استخراجها (ضع null لأي حقل غير موجود أو غير مقروء):
-1. documentType: تصنيف نوع الفاتورة تلقائياً بناءً على محتوى الفاتورة وأطرافها وعباراتها (وليس من اسم الملف أو التخمين):
+الحقول المطلوب استخراجها (ضع null لأي حقل غير موجود أو غير مقروء في الصورة):
+1. documentType: تصنيف نوع الفاتورة تلقائياً من محتوى الصورة والأطراف والعبارات فقط:
    - "مبيعات": إذا كانت الفاتورة تمثل عملية بيع صادرة عن المؤسسة إلى عميل أو ملخص مبيعات/نقطة بيع يومي (Z-Report / إغلاق وردية / تقرير مبيعات كاش وشبكة).
-   - "مشتريات": إذا كانت الفاتورة تمثل عملية شراء قامت بها المؤسسة من مورد أو تاجر جملة أو شركة خدمات.
-   - "يحتاج تحديد النوع": إذا تعذر الجزم بين المبيعات والمشتريات من محتوى المستند.
-2. classificationReason: سبب قصير بالعربية لتصنيف نوع الفاتورة.
+   - "مشتريات": إذا كانت الفاتورة تمثل عملية شراء قامت بها المؤسسة من مورد أو تاجر جملة أو مزود خدمة.
+   - "يحتاج تحديد النوع": إذا كانت الصورة غير واضحة أو تعذر الجزم بين المبيعات والمشتريات من محتوى المستند.
+2. classificationReason: سبب قصير بالعربية لتصنيف نوع الفاتورة بناءً على ما ظهر في الصورة.
 3. invoiceNumber: رقم الفاتورة (أو null).
-4. invoiceDate: تاريخ الفاتورة المطبوع بصيغة YYYY-MM-DD إن أمكن تحويله بدقة، أو النص المطبوع، أو null إذا لم يكن التاريخ موجوداً أو كان غير مقروء. (ممنوع اختراع تاريخ اليوم).
+4. invoiceDate: تاريخ الفاتورة المطبوع بصيغة YYYY-MM-DD إن أمكن تحويله بدقة، أو null إذا لم يكن التاريخ موجوداً أو كان غير مقروء. (ممنوع اختراع تاريخ اليوم).
 5. day: اسم اليوم بالعربية (مثل السبت، الأحد...) فقط إذا كان مكتوباً أو مستنتجاً من تاريخ صحيح مقروء، وإلا null.
 6. issuerName: اسم الجهة المصدرة للفاتورة / المورد / البائع (أو null).
 7. clientName: اسم العميل / المشتري المستلم للفاتورة (أو null).
 8. issuerTaxId: الرقم الضريبي للجهة المصدرة (أو null).
 9. clientTaxId: الرقم الضريبي للعميل (أو null).
-10. currency: رمز العملة المطبوع مثل SAR أو USD (أو null إذا لم يُذكر).
+10. currency: رمز العملة المطبوع مثل SAR أو USD (أو null).
 11. subtotal: المبلغ قبل الضريبة (رقم أو null).
 12. taxAmount: قيمة ضريبة القيمة المضافة (رقم أو null).
-13. taxRate: نسبة الضريبة المكتوبة فعلياً مثل 15 أو 5 أو 0 (رقم أو null — لا تفترض 15% من عندك).
+13. taxRate: نسبة الضريبة المكتوبة فعلياً مثل 15 أو 5 أو 0 (رقم أو null — لا تفترض 15%).
 14. discount: قيمة الخصم إن وجدت (رقم أو null).
 15. grandTotal: الإجمالي النهائي شامل الضريبة (رقم أو null).
-16. cashSales: المبيعات النقدية (الكاش) فقط إذا كانت مفصولة ومكتوبة صراحة في المستند (رقم أو null — لا تفترض 100% كاش).
-17. networkSales: مبيعات الشبكة / البطاقة / مدى / POS فقط إذا كانت مفصولة ومكتوبة صراحة في المستند (رقم أو null — لا تفترض 100% شبكة).
-18. notes: أي ملاحظات أو شروط مهمة مكتوبة في الفاتورة (أو null).
+16. cashSales: المبيعات النقدية (الكاش) فقط إذا كانت مفصولة ومكتوبة صراحة في المستند (رقم أو null).
+17. networkSales: مبيعات الشبكة / البطاقة / مدى / POS فقط إذا كانت مفصولة ومكتوبة صراحة في المستند (رقم أو null).
+18. notes: أي ملاحظات مهمة مكتوبة في الفاتورة (أو null).
 19. items: مصفوفة الأصناف إن وجدت (name, code, quantity, unit, unitPrice, discount, tax, total) أو [].
 20. customFieldsExtracted: كائن للحقول الإضافية التالية إن وجدت: ${JSON.stringify(customFields || [])}.
 
 قواعد صارمة:
+- اقرأ محتوى الصورة الفعلي فقط ولا تعتمد على أي اسم ملف.
 - لا تخترع أو تكمّل أي بيانات غير موجودة في الصورة.
 - لا تحوّل الحقول المجهولة إلى 0؛ أرجع null بوضوح.
 - لا تفترض تاريخ اليوم إذا كان التاريخ غائباً؛ أرجع null.
-- لا تفترض ضريبة 15% أو تقسيم كاش/شبكة إذا لم يكن مطبوعاً بوضوح.
-- التزم بإرجاع كائن JSON صالح فقط.`;
+- أرجع JSON صالح فقط.`;
 
       let response: any;
       let lastError: any;
@@ -121,22 +157,23 @@ ${orgContext}
         try {
           response = await ai.models.generateContent({
             model: GEMINI_MODEL,
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    inlineData: {
-                      data: imageBase64,
-                      mimeType: mimeType || 'image/jpeg',
-                    },
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: safeMimeType,
+                    data: cleanBase64,
                   },
-                  {
-                    text: prompt,
-                  },
-                ],
-              },
-            ],
+                },
+                {
+                  text: prompt,
+                },
+              ],
+            },
+            config: {
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            },
           });
           break;
         } catch (err: any) {
@@ -154,6 +191,10 @@ ${orgContext}
       }
 
       const textOutput = response.text || '';
+      if (!textOutput.trim()) {
+        throw new Error('أعاد Gemini استجابة فارغة؛ يرجى التأكد من وضوح الصورة والمحاولة مجدداً.');
+      }
+
       let jsonStr = textOutput.trim();
       if (jsonStr.startsWith('```json')) {
         jsonStr = jsonStr.replace(/^```json\s*/, '').replace(/\s*```$/, '');
@@ -203,7 +244,13 @@ ${orgContext}
       res.json({ success: true, data: sanitized });
     } catch (error: any) {
       console.error('Error in /api/extract-invoice:', error);
-      const status = isRetryableGeminiError(error) ? 503 : 500;
+      const rawStatus = Number(error?.status || error?.statusCode);
+      const status =
+        rawStatus >= 400 && rawStatus < 600
+          ? rawStatus
+          : isRetryableGeminiError(error)
+          ? 503
+          : 500;
       res.status(status).json({
         success: false,
         error: error?.message || 'حدث خطأ أثناء معالجة الفاتورة بالذكاء الاصطناعي',
