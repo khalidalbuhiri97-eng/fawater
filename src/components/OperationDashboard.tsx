@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   Building2, Upload, FileSpreadsheet, Plus, Settings, DollarSign, 
-  TrendingUp, TrendingDown, CheckCircle2, Clock, AlertCircle, Sparkles, LayoutDashboard, ListFilter, Tag 
+  TrendingUp, TrendingDown, CheckCircle2, Clock, AlertCircle, Sparkles, LayoutDashboard, ListFilter, Tag, ArrowLeft, ArrowRight, Check
 } from 'lucide-react';
 import { Operation } from '../types';
 import { InvoicesTable } from './InvoicesTable';
@@ -44,25 +44,27 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
       {/* Operation Header Card */}
-      <div className="bg-slate-900 text-white rounded-3xl p-8 shadow-xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
+      <div className="bg-gradient-to-l from-slate-900 via-slate-800 to-emerald-950 text-white rounded-3xl p-8 shadow-xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
         <div className="absolute -left-10 -bottom-10 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-full text-xs font-semibold border border-emerald-500/30">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-full text-xs font-bold border border-emerald-500/30">
               {operation.activityType}
             </span>
-            <span className="text-xs text-slate-400">ملف قاعدة البيانات: {operation.excelFileName}</span>
+            <span className="text-xs text-slate-300 bg-slate-800/80 px-3 py-1 rounded-full border border-slate-700">
+              ملف Excel: {operation.excelFileName}
+            </span>
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight mb-2">{operation.name}</h1>
-          <p className="text-slate-300 text-sm">
-            إدارة مستندات الفواتير، الاستخراج الذكي عبر Gemini Vision، وتصدير البيانات مباشرة إلى ملف Excel.
+          <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
+            منصة إدارة واستخراج بيانات الفواتير والمستندات عبر ملفات Excel والذكاء الاصطناعي.
           </p>
         </div>
 
         <div className="flex items-center gap-3 relative z-10 shrink-0">
           <button
             onClick={() => setIsUploadModalOpen(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg transition transform hover:-translate-y-0.5"
+            className="flex items-center gap-2 px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg transition transform hover:-translate-y-0.5"
           >
             <Upload className="w-5 h-5" />
             <span>رفع فواتير جديدة</span>
@@ -70,13 +72,48 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         </div>
       </div>
 
+      {/* Usage Steps Guide Bar */}
+      <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs">
+        <h3 className="font-bold text-sm text-slate-800 mb-4 flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-emerald-600" />
+          <span>خطوات العمل الذكية في النظام:</span>
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 text-center">
+          <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100 flex flex-col items-center gap-1.5">
+            <div className="w-7 h-7 bg-emerald-600 text-white rounded-full flex items-center justify-center font-bold text-xs">1</div>
+            <span className="font-bold text-xs text-slate-800">رفع الفواتير</span>
+            <span className="text-[11px] text-slate-500">رفع صور أو مستندات الفواتير</span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
+            <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">2</div>
+            <span className="font-bold text-xs text-slate-800">الاستخراج الذكي</span>
+            <span className="text-[11px] text-slate-500">تحليل البيانات بـ Gemini AI</span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
+            <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">3</div>
+            <span className="font-bold text-xs text-slate-800">المراجعة والتدقيق</span>
+            <span className="text-[11px] text-slate-500">مراجعة الصورة والحقول وتعديلها</span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
+            <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">4</div>
+            <span className="font-bold text-xs text-slate-800">الحفظ في Excel</span>
+            <span className="text-[11px] text-slate-500">تحديث سجلات ملف الـ Excel</span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center gap-1.5">
+            <div className="w-7 h-7 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xs">5</div>
+            <span className="font-bold text-xs text-slate-800">تنزيل الملف</span>
+            <span className="text-[11px] text-slate-500">تحميل ملف Excel جاهز للاستخدام</span>
+          </div>
+        </div>
+      </div>
+
       {/* Tabs Navigation */}
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('overview')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition ${
+          className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition ${
             activeTab === 'overview'
-              ? 'bg-emerald-600 text-white shadow-sm'
+              ? 'bg-emerald-600 text-white shadow-md'
               : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
           }`}
         >
@@ -85,9 +122,9 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         </button>
         <button
           onClick={() => setActiveTab('invoices')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition ${
+          className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition ${
             activeTab === 'invoices'
-              ? 'bg-emerald-600 text-white shadow-sm'
+              ? 'bg-emerald-600 text-white shadow-md'
               : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
           }`}
         >
@@ -96,9 +133,9 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         </button>
         <button
           onClick={() => setActiveTab('custom_fields')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition ${
+          className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition ${
             activeTab === 'custom_fields'
-              ? 'bg-emerald-600 text-white shadow-sm'
+              ? 'bg-emerald-600 text-white shadow-md'
               : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
           }`}
         >
@@ -107,9 +144,9 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
         </button>
         <button
           onClick={() => setActiveTab('export')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition ${
+          className={`flex items-center gap-2 px-5 py-3 rounded-2xl font-bold text-sm transition ${
             activeTab === 'export'
-              ? 'bg-emerald-600 text-white shadow-sm'
+              ? 'bg-emerald-600 text-white shadow-md'
               : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
           }`}
         >
@@ -182,7 +219,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
               </div>
               <button
                 onClick={() => onStartReview(pendingInvoices[0].id)}
-                className="px-6 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl text-sm font-bold shadow-sm transition shrink-0"
+                className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl text-sm font-bold shadow-sm transition shrink-0"
               >
                 بدء المراجعة الآن
               </button>
@@ -210,7 +247,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
                 <p className="text-slate-500 text-xs max-w-sm mx-auto">ارفع صور فواتيرك ومستنداتك واستخرج بياناتها بدقة خارقة باستخدام Gemini Vision.</p>
                 <button
                   onClick={() => setIsUploadModalOpen(true)}
-                  className="px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-500 transition"
+                  className="px-6 py-3 bg-emerald-600 text-white rounded-2xl text-sm font-bold hover:bg-emerald-500 transition shadow-md"
                 >
                   رفع أول فاتورة
                 </button>

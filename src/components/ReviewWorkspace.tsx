@@ -30,12 +30,12 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
   if (!currentInvoice) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-12 text-center">
-        <h3 className="text-lg font-bold text-slate-800 mb-2">لا توجد فواتير للمراجعة</h3>
+      <div className="max-w-7xl mx-auto px-4 py-16 text-center">
+        <h3 className="text-xl font-bold text-slate-800 mb-2">لا توجد فواتير للمراجعة</h3>
         <p className="text-slate-500 mb-6">يرجى رفع صور أو فواتير جديدة أولاً.</p>
         <button
           onClick={onBackToDashboard}
-          className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-medium"
+          className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold shadow-md hover:bg-emerald-500 transition"
         >
           العودة للوحة التحكم
         </button>
@@ -46,7 +46,6 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const handleFieldChange = (field: keyof InvoiceRecord, value: any) => {
     const updated = { ...currentInvoice, [field]: value, updatedAt: new Date().toISOString().split('T')[0] };
     
-    // Auto calculate grand total if subtotal/tax/discount change
     if (['subtotal', 'taxAmount', 'discount'].includes(field)) {
       const sub = Number(field === 'subtotal' ? value : currentInvoice.subtotal || 0);
       const tax = Number(field === 'taxAmount' ? value : currentInvoice.taxAmount || 0);
@@ -111,13 +110,11 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   };
 
   const handleSaveAndNext = () => {
-    // Mark as completed
     const updated = { ...currentInvoice, status: 'مكتملة' as const };
     updateInvoiceInList(updated);
     setMsg({ type: 'success', text: 'تم حفظ الفاتورة وتحديث ملف Excel بنجاح' });
     setTimeout(() => setMsg(null), 3000);
 
-    // Go to next uncompleted or next index
     if (currentIndex < invoices.length - 1) {
       onSelectInvoice(invoices[currentIndex + 1].id);
     }
@@ -186,13 +183,13 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Top Header & Navigation */}
-      <div className="flex items-center justify-between mb-6 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+      <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
         <div className="flex items-center gap-3">
           <button
             onClick={onBackToDashboard}
-            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
           >
             العودة للوحة التحكم
           </button>
@@ -200,7 +197,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           <span className="text-sm font-bold text-slate-800">
             فاتورة {currentIndex + 1} من {invoices.length}
           </span>
-          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+          <span className={`px-3 py-1 rounded-full text-xs font-bold ${
             currentInvoice.status === 'مكتملة' ? 'bg-emerald-100 text-emerald-800' :
             currentInvoice.status === 'فشل' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
           }`}>
@@ -212,7 +209,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           <button
             disabled={currentIndex === 0}
             onClick={() => onSelectInvoice(invoices[currentIndex - 1].id)}
-            className="flex items-center gap-1 px-3 py-1.5 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
+            className="flex items-center gap-1 px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
           >
             <ChevronRight className="w-4 h-4" />
             <span>السابق</span>
@@ -220,7 +217,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           <button
             disabled={currentIndex === invoices.length - 1}
             onClick={() => onSelectInvoice(invoices[currentIndex + 1].id)}
-            className="flex items-center gap-1 px-3 py-1.5 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
+            className="flex items-center gap-1 px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
           >
             <span>التالي</span>
             <ChevronLeft className="w-4 h-4" />
@@ -229,7 +226,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       </div>
 
       {msg && (
-        <div className={`p-4 mb-6 rounded-2xl text-sm font-medium flex items-center gap-2 ${
+        <div className={`p-4 rounded-2xl text-sm font-medium flex items-center gap-2 ${
           msg.type === 'success' ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-red-50 border border-red-200 text-red-800'
         }`}>
           {msg.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> : <AlertCircle className="w-5 h-5 text-red-600" />}
@@ -237,12 +234,12 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Main Split Workspace */}
+      {/* Main Split Workspace: Left side Image, Right side Data Form */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left / Top: Image Viewer */}
+        {/* Left Side: Invoice Image Viewer */}
         <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden sticky top-20">
           <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
-            <span className="text-xs font-bold truncate max-w-[200px]">{currentInvoice.imageFileName || 'صورة المستند'}</span>
+            <span className="text-xs font-bold truncate max-w-[220px]">{currentInvoice.imageFileName || 'صورة المستند'}</span>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setZoom(z => Math.min(z + 0.25, 3))}
@@ -268,7 +265,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             </div>
           </div>
 
-          <div className="p-4 bg-slate-950 flex items-center justify-center min-h-[450px] max-h-[600px] overflow-auto relative">
+          <div className="p-4 bg-slate-950 flex items-center justify-center min-h-[480px] max-h-[600px] overflow-auto relative">
             {currentInvoice.imageBase64 ? (
               <img
                 src={`data:${currentInvoice.imageMimeType || 'image/jpeg'};base64,${currentInvoice.imageBase64}`}
@@ -285,10 +282,10 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             <button
               onClick={handleRunAiForThis}
               disabled={extractingSingle || !currentInvoice.imageBase64}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold transition shadow-sm"
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold transition shadow-sm"
             >
               <Sparkles className="w-4 h-4" />
-              <span>{extractingSingle ? 'جاري الاستخراج...' : 'إعادة الاستخراج بالذكاء الاصطناعي'}</span>
+              <span>{extractingSingle ? 'جاري الاستخراج...' : 'استخراج بالذكاء الاصطناعي'}</span>
             </button>
 
             <span className="text-xs text-slate-500 font-medium">
@@ -302,7 +299,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <button
                 key={inv.id}
                 onClick={() => onSelectInvoice(inv.id)}
-                className={`w-12 h-12 rounded-lg border-2 shrink-0 overflow-hidden relative transition ${
+                className={`w-12 h-12 rounded-xl border-2 shrink-0 overflow-hidden relative transition ${
                   inv.id === currentInvoice.id ? 'border-emerald-600 ring-2 ring-emerald-500/20' : 'border-slate-200 opacity-60 hover:opacity-100'
                 }`}
               >
@@ -316,16 +313,16 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           </div>
         </div>
 
-        {/* Right / Bottom: Structured Form */}
+        {/* Right Side: Structured Form */}
         <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-6">
           <div className="flex items-center justify-between border-b border-slate-200 pb-4">
             <div>
               <h3 className="font-extrabold text-lg text-slate-900">مراجعة بيانات الفاتورة والمستند</h3>
-              <p className="text-xs text-slate-500">قم بمراجعة البيانات المستخرجة وتعديلها قبل الحفظ النهائي في Excel</p>
+              <p className="text-xs text-slate-500">قم بمراجعة البيانات وتعديلها يدوياً أو عبر الذكاء الاصطناعي</p>
             </div>
             <button
               onClick={handleSaveAndNext}
-              className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-bold shadow-md transition"
+              className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-bold shadow-md transition"
             >
               <Save className="w-4 h-4" />
               <span>حفظ والانتقال للتالية</span>
@@ -339,7 +336,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <select
                 value={currentInvoice.documentType}
                 onChange={(e) => handleFieldChange('documentType', e.target.value as DocumentType)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none bg-white text-slate-800"
               >
                 {['مبيعات', 'مشتريات', 'مصروفات', 'مرتجعات', 'فاتورة ضريبية', 'سند قبض', 'سند صرف', 'أخرى'].map((t) => (
                   <option key={t} value={t}>{t}</option>
@@ -353,7 +350,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.invoiceNumber || ''}
                 onChange={(e) => handleFieldChange('invoiceNumber', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
                 placeholder="مثال: INV-2026-001"
               />
             </div>
@@ -364,7 +361,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="date"
                 value={currentInvoice.invoiceDate || ''}
                 onChange={(e) => handleFieldChange('invoiceDate', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
 
@@ -374,7 +371,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.currency || 'SAR'}
                 onChange={(e) => handleFieldChange('currency', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
 
@@ -384,7 +381,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.issuerName || ''}
                 onChange={(e) => handleFieldChange('issuerName', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
 
@@ -394,7 +391,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.clientName || ''}
                 onChange={(e) => handleFieldChange('clientName', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
 
@@ -404,7 +401,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.issuerTaxId || ''}
                 onChange={(e) => handleFieldChange('issuerTaxId', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
 
@@ -414,7 +411,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 type="text"
                 value={currentInvoice.clientTaxId || ''}
                 onChange={(e) => handleFieldChange('clientTaxId', e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 outline-none text-slate-800"
               />
             </div>
           </div>
@@ -503,7 +500,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider">تفاصيل الأصناف ({currentInvoice.items?.length || 0})</h4>
               <button
                 onClick={handleAddItem}
-                className="flex items-center gap-1 px-3 py-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg text-xs font-bold transition"
+                className="flex items-center gap-1 px-3.5 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-xl text-xs font-bold transition"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>إضافة صنف</span>
@@ -519,55 +516,55 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 <table className="w-full text-right text-xs">
                   <thead className="bg-slate-100 text-slate-700">
                     <tr>
-                      <th className="p-2">الصنف</th>
-                      <th className="p-2 w-16">الكمية</th>
-                      <th className="p-2 w-20">الوحدة</th>
-                      <th className="p-2 w-24">السعر</th>
-                      <th className="p-2 w-24">الإجمالي</th>
-                      <th className="p-2 w-10"></th>
+                      <th className="p-2.5">الصنف</th>
+                      <th className="p-2.5 w-16">الكمية</th>
+                      <th className="p-2.5 w-20">الوحدة</th>
+                      <th className="p-2.5 w-24">السعر</th>
+                      <th className="p-2.5 w-24">الإجمالي</th>
+                      <th className="p-2.5 w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {currentInvoice.items.map((item) => (
                       <tr key={item.id}>
-                        <td className="p-2">
+                        <td className="p-2.5">
                           <input
                             type="text"
                             value={item.name}
                             onChange={(e) => handleUpdateItem(item.id, 'name', e.target.value)}
                             placeholder="اسم الصنف"
-                            className="w-full px-2 py-1 rounded border border-slate-200 outline-none"
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
                           />
                         </td>
-                        <td className="p-2">
+                        <td className="p-2.5">
                           <input
                             type="number"
                             value={item.quantity}
                             onChange={(e) => handleUpdateItem(item.id, 'quantity', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2 py-1 rounded border border-slate-200 outline-none"
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
                           />
                         </td>
-                        <td className="p-2">
+                        <td className="p-2.5">
                           <input
                             type="text"
                             value={item.unit}
                             onChange={(e) => handleUpdateItem(item.id, 'unit', e.target.value)}
-                            className="w-full px-2 py-1 rounded border border-slate-200 outline-none"
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
                           />
                         </td>
-                        <td className="p-2">
+                        <td className="p-2.5">
                           <input
                             type="number"
                             step="0.01"
                             value={item.unitPrice}
                             onChange={(e) => handleUpdateItem(item.id, 'unitPrice', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2 py-1 rounded border border-slate-200 outline-none"
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 outline-none bg-white"
                           />
                         </td>
-                        <td className="p-2 font-bold text-emerald-700">
+                        <td className="p-2.5 font-bold text-emerald-700">
                           {item.total.toFixed(2)}
                         </td>
-                        <td className="p-2 text-center">
+                        <td className="p-2.5 text-center">
                           <button
                             onClick={() => handleDeleteItem(item.id)}
                             className="text-slate-400 hover:text-red-600 p-1 rounded"
@@ -589,7 +586,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               rows={2}
               value={currentInvoice.notes || ''}
               onChange={(e) => handleFieldChange('notes', e.target.value)}
-              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-800"
             />
           </div>
         </div>

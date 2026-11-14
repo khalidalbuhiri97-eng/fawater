@@ -79,7 +79,7 @@ export function createNewStructuredWorkbook(operationName: string, activityType:
  */
 export async function parseUploadedExcel(file: File): Promise<ExcelTemplateAnalysis> {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+  const workbook = XLSX.read(data, { type: 'array', cellDates: true, cellStyles: true });
   const sheetNames = workbook.SheetNames;
   const sheetsPreview: Record<string, SheetPreview> = {};
 
@@ -112,7 +112,8 @@ export async function parseUploadedExcel(file: File): Promise<ExcelTemplateAnaly
 }
 
 /**
- * Updates or appends invoices into an existing or new workbook and returns binary Uint8Array.
+ * Appends invoices into the existing workbook without overwriting pre-existing data,
+ * preserving template formatting, styles, formulas, and preventing duplicates.
  */
 export function syncInvoicesToWorkbook(
   workbook: XLSX.WorkBook,
@@ -121,25 +122,60 @@ export function syncInvoicesToWorkbook(
   operationName: string,
   activityType: string
 ): Uint8Array {
-  // We can clone or rebuild the sheets while preserving user custom sheets
-  // For structured worksheets, we rebuild the data rows from the `invoices` array.
+  // Helper to ensure sheet exists or get it, without destroying formatting if it exists
+  const getOrEnsureSheet = (sheetName: string, defaultHeaders: any[]) => {
+    if (!workbook.Sheets[sheetName]) {
+      const ws = XLSX.utils.aoa_to_sheet([defaultHeaders]);
+      XLSX.utils.book_append_sheet(workbook, ws, sheetName);
+    }
+    return workbook.Sheets[sheetName];
+  };
 
-  // 1. Sales Sheet
-  const salesRows: any[][] = [
-    ['معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المستند', 'اسم المؤسسة (البائع)', 'اسم العميل', 'الرقم الضريبي للبائع', 'الرقم الضريبي للعميل', 'العملة', 'الإجمالي قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات']
-  ];
-  const purchaseRows: any[][] = [
-    ['معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المستند', 'اسم المؤسسة (المورد)', 'اسم العميل', 'الرقم الضريبي للمورد', 'الرقم الضريبي للعميل', 'العملة', 'الإجمالي قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات']
-  ];
-  const expenseRows: any[][] = [
-    ['معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المصروف', 'جهة الصرف / المورد', 'الرقم الضريبي', 'العملة', 'المبلغ قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات']
-  ];
-  const itemsRows: any[][] = [
-    ['معرف الفاتورة', 'رقم الفاتورة', 'اسم الصنف', 'كود الصنف', 'الكمية', 'الوحدة', 'سعر الوحدة', 'الخصم', 'الضريبة', 'إجمالي الصنف']
-  ];
-  const customRows: any[][] = [
-    ['معرف الفاتورة', 'رقم الفاتورة', 'اسم الحقل المخصص', 'قيمة الحقل']
-  ];
+  const wsSales = getOrEnsureSheet('المبيعات (Sales)', [
+    'معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المستند', 'اسم المؤسسة (البائع)', 'اسم العميل', 'الرقم الضريبي للبائع', 'الرقم الضريبي للعميل', 'العملة', 'الإجمالي قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات'
+  ]);
+  const wsPurchases = getOrEnsureSheet('المشتريات (Purchases)', [
+    'معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المستند', 'اسم المؤسسة (المورد)', 'اسم العميل', 'الرقم الضريبي للمورد', 'الرقم الضريبي للعميل', 'العملة', 'الإجمالي قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات'
+  ]);
+  const wsExpenses = getOrEnsureSheet('المصروفات (Expenses)', [
+    'معرف الفاتورة', 'رقم الفاتورة', 'التاريخ', 'نوع المصروف', 'جهة الصرف / المورد', 'الرقم الضريبي', 'العملة', 'المبلغ قبل الضريبة', 'الضريبة', 'نسبة الضريبة %', 'الخصم', 'الإجمالي النهائي', 'ملاحظات'
+  ]);
+  const wsItems = getOrEnsureSheet('تفاصيل الأصناف (Items)', [
+    'معرف الفاتورة', 'رقم الفاتورة', 'اسم الصنف', 'كود الصنف', 'الكمية', 'الوحدة', 'سعر الوحدة', 'الخصم', 'الضريبة', 'إجمالي الصنف'
+  ]);
+  const wsCustom = getOrEnsureSheet('الحقول المخصصة (Custom Fields)', [
+    'معرف الفاتورة', 'رقم الفاتورة', 'اسم الحقل المخصص', 'قيمة الحقل'
+  ]);
+
+  // Helper to append rows to an existing worksheet using sheet_add_aoa with origin: -1
+  // This preserves existing rows, styles, formulas, and formatting above.
+  const appendRowsToSheet = (ws: XLSX.WorkSheet, newRows: any[][]) => {
+    if (newRows.length === 0) return;
+    XLSX.utils.sheet_add_aoa(ws, newRows, { origin: -1 });
+  };
+
+  // Extract existing IDs from sheets to prevent duplication
+  const getExistingIds = (ws: XLSX.WorkSheet): Set<string> => {
+    const ids = new Set<string>();
+    const json = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
+    // Assuming ID is in column 0 or 1
+    for (let r = 1; r < json.length; r++) {
+      const row = json[r] as any[];
+      if (row && row[0]) ids.add(String(row[0]));
+      if (row && row[1]) ids.add(String(row[1]));
+    }
+    return ids;
+  };
+
+  const salesExistingIds = getExistingIds(wsSales);
+  const purchaseExistingIds = getExistingIds(wsPurchases);
+  const expenseExistingIds = getExistingIds(wsExpenses);
+
+  const newSalesRows: any[][] = [];
+  const newPurchaseRows: any[][] = [];
+  const newExpenseRows: any[][] = [];
+  const newItemsRows: any[][] = [];
+  const newCustomRows: any[][] = [];
 
   let totalSales = 0;
   let totalPurchases = 0;
@@ -150,32 +186,44 @@ export function syncInvoicesToWorkbook(
     if (inv.status !== 'مكتملة') continue;
 
     const docType = inv.documentType || 'مبيعات';
+    const invId = inv.id;
+    const invNum = inv.invoiceNumber || '';
+
     const row = [
-      inv.id,
-      inv.invoiceNumber || '',
-      inv.invoiceDate || '',
+      invId,
+      invNum,
+      inv.invoiceDate || null,
       docType,
-      inv.issuerName || '',
-      inv.clientName || '',
-      inv.issuerTaxId || '',
-      inv.clientTaxId || '',
-      inv.currency || 'SAR',
-      inv.subtotal || 0,
-      inv.taxAmount || 0,
-      inv.taxRate || 0,
-      inv.discount || 0,
-      inv.grandTotal || 0,
-      inv.notes || ''
+      inv.issuerName || null,
+      inv.clientName || null,
+      inv.issuerTaxId || null,
+      inv.clientTaxId || null,
+      inv.currency || null,
+      inv.subtotal !== undefined ? inv.subtotal : null,
+      inv.taxAmount !== undefined ? inv.taxAmount : null,
+      inv.taxRate !== undefined ? inv.taxRate : null,
+      inv.discount !== undefined ? inv.discount : null,
+      inv.grandTotal !== undefined ? inv.grandTotal : null,
+      inv.notes || null
     ];
 
     if (docType === 'مبيعات' || docType === 'فاتورة ضريبية') {
-      salesRows.push(row);
+      if (!salesExistingIds.has(invId) && !salesExistingIds.has(invNum)) {
+        newSalesRows.push(row);
+        salesExistingIds.add(invId);
+      }
       totalSales += Number(inv.grandTotal || 0);
     } else if (docType === 'مشتريات' || docType === 'مرتجعات') {
-      purchaseRows.push(row);
+      if (!purchaseExistingIds.has(invId) && !purchaseExistingIds.has(invNum)) {
+        newPurchaseRows.push(row);
+        purchaseExistingIds.add(invId);
+      }
       totalPurchases += Number(inv.grandTotal || 0);
     } else {
-      expenseRows.push(row);
+      if (!expenseExistingIds.has(invId) && !expenseExistingIds.has(invNum)) {
+        newExpenseRows.push(row);
+        expenseExistingIds.add(invId);
+      }
       totalExpenses += Number(inv.grandTotal || 0);
     }
 
@@ -184,17 +232,17 @@ export function syncInvoicesToWorkbook(
     // Items
     if (inv.items && inv.items.length > 0) {
       for (const item of inv.items) {
-        itemsRows.push([
-          inv.id,
-          inv.invoiceNumber || '',
-          item.name || '',
-          item.code || '',
-          item.quantity || 1,
-          item.unit || 'حبة',
-          item.unitPrice || 0,
-          item.discount || 0,
-          item.tax || 0,
-          item.total || 0
+        newItemsRows.push([
+          invId,
+          invNum,
+          item.name || null,
+          item.code || null,
+          item.quantity !== undefined ? item.quantity : null,
+          item.unit || null,
+          item.unitPrice !== undefined ? item.unitPrice : null,
+          item.discount !== undefined ? item.discount : null,
+          item.tax !== undefined ? item.tax : null,
+          item.total !== undefined ? item.total : null
         ]);
       }
     }
@@ -204,53 +252,47 @@ export function syncInvoicesToWorkbook(
       for (const [cfId, val] of Object.entries(inv.customFieldsValues)) {
         const cfDef = customFields.find(c => c.id === cfId);
         const cfName = cfDef ? cfDef.name : cfId;
-        customRows.push([
-          inv.id,
-          inv.invoiceNumber || '',
+        newCustomRows.push([
+          invId,
+          invNum,
           cfName,
-          val !== undefined && val !== null ? String(val) : ''
+          val !== undefined && val !== null ? String(val) : null
         ]);
       }
     }
   }
 
-  // Update or create sheets in workbook
-  const updateSheet = (sheetName: string, data: any[][]) => {
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    if (workbook.Sheets[sheetName]) {
-      workbook.Sheets[sheetName] = ws;
-    } else {
-      XLSX.utils.book_append_sheet(workbook, ws, sheetName);
-    }
-  };
+  // Append safely without destroying template formatting
+  appendRowsToSheet(wsSales, newSalesRows);
+  appendRowsToSheet(wsPurchases, newPurchaseRows);
+  appendRowsToSheet(wsExpenses, newExpenseRows);
+  appendRowsToSheet(wsItems, newItemsRows);
+  appendRowsToSheet(wsCustom, newCustomRows);
 
-  updateSheet('المبيعات (Sales)', salesRows);
-  updateSheet('المشتريات (Purchases)', purchaseRows);
-  updateSheet('المصروفات (Expenses)', expenseRows);
-  updateSheet('تفاصيل الأصناف (Items)', itemsRows);
-  updateSheet('الحقول المخصصة (Custom Fields)', customRows);
+  // Summary Sheet update if exists
+  const wsSummary = workbook.Sheets['الملخص (Summary)'];
+  if (wsSummary) {
+    const netIncome = totalSales - (totalPurchases + totalExpenses);
+    // Update summary cells if structured or add/update
+    XLSX.utils.sheet_add_aoa(wsSummary, [
+      ['مشروع / مؤسسة:', operationName],
+      ['نوع النشاط:', activityType],
+      ['تاريخ التحديث:', new Date().toISOString().split('T')[0]],
+      [],
+      ['الملخص المالي', 'القيمة'],
+      ['إجمالي المبيعات', totalSales],
+      ['إجمالي المشتريات', totalPurchases],
+      ['إجمالي المصروفات', totalExpenses],
+      ['إجمالي الضرائب المحصلة/المدفوعة', totalTax],
+      ['صافي الإيرادات', netIncome],
+    ], { origin: 'A1' });
+  }
 
-  // Summary Sheet
-  const netIncome = totalSales - (totalPurchases + totalExpenses);
-  const summaryData = [
-    ['مشروع / مؤسسة:', operationName],
-    ['نوع النشاط:', activityType],
-    ['تاريخ التحديث:', new Date().toISOString().split('T')[0]],
-    [],
-    ['الملخص المالي', 'القيمة'],
-    ['إجمالي المبيعات', totalSales],
-    ['إجمالي المشتريات', totalPurchases],
-    ['إجمالي المصروفات', totalExpenses],
-    ['إجمالي الضرائب المحصلة/المدفوعة', totalTax],
-    ['صافي الإيرادات', netIncome],
-  ];
-  updateSheet('الملخص (Summary)', summaryData);
-
-  // Write to array buffer
-  const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  // Write to array buffer preserving cell styles if supported
+  const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true });
   return new Uint8Array(excelBuffer);
 }
 
 export function downloadWorkbook(workbook: XLSX.WorkBook, filename: string) {
-  XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
+  XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`, { cellStyles: true });
 }
