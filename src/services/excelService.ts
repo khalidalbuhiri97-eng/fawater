@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { InvoiceRecord, CustomField } from '../types';
+import { loadOfficialTemplateWorkbook } from './dbService';
 
 export interface SheetPreview {
   sheetName: string;
@@ -14,61 +15,6 @@ export interface ExcelTemplateAnalysis {
   workbook: XLSX.WorkBook;
 }
 
-/**
- * Creates the official structured Excel workbook with 3 official sheets:
- * 1. ملخص الأداء
- * 2. المبيعات (Headers at row 4, data starts at row 5)
- * 3. المشتريات والموردين (Headers at row 3, data starts at row 4)
- */
-export function createNewStructuredWorkbook(operationName: string, activityType: string): XLSX.WorkBook {
-  const wb = XLSX.utils.book_new();
-
-  // 1. ملخص الأداء (Performance Summary)
-  const summaryData = [
-    ['تقرير أداء المؤسسة / المشروع', operationName],
-    ['نوع النشاط:', activityType],
-    ['تاريخ الإنشاء:', new Date().toISOString().split('T')[0]],
-    [],
-    ['مؤشر الأداء', 'القيمة الإجمالية'],
-    ['إجمالي المبيعات', 0],
-    ['إجمالي المشتريات', 0],
-    ['إجمالي الضرائب', 0],
-    ['صافي الإيرادات', 0],
-  ];
-  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'ملخص الأداء');
-
-  // 2. المبيعات (Sales - Header at row 4 (index 3), data starts at row 5)
-  const salesHeaders = [
-    'التاريخ', 'اليوم', 'المبيعات النقدية (الكاش)', 'الشبكة', 'إجمالي المبيعات', 'رصيد الكاش', 'رصيد الصندوق', 'رصيد الشبكة (البنك)'
-  ];
-  const salesRows = [
-    [operationName, '', '', '', '', '', '', ''],
-    ['سجل مبيعات المؤسسة', '', '', '', '', '', '', ''],
-    [],
-    salesHeaders,
-  ];
-  const wsSales = XLSX.utils.aoa_to_sheet(salesRows);
-  XLSX.utils.book_append_sheet(wb, wsSales, 'المبيعات');
-
-  // 3. المشتريات والموردين (Purchases - Header at row 3 (index 2), data starts at row 4)
-  const purchasesHeaders = [
-    'التاريخ', 'اسم المورد', 'المبلغ قبل الضريبة', 'ضريبة القيمة المضافة', 'الإجمالي شامل الضريبة', 'الرصيد'
-  ];
-  const purchasesRows = [
-    [operationName, '', '', '', '', ''],
-    ['سجل المشتريات والموردين', '', '', '', '', ''],
-    purchasesHeaders,
-  ];
-  const wsPurchases = XLSX.utils.aoa_to_sheet(purchasesRows);
-  XLSX.utils.book_append_sheet(wb, wsPurchases, 'المشتريات والموردين');
-
-  return wb;
-}
-
-/**
- * Parses an uploaded Excel file and returns worksheet previews and structure.
- */
 export async function parseUploadedExcel(file: File): Promise<ExcelTemplateAnalysis> {
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: 'array', cellDates: true, cellStyles: true });
@@ -103,23 +49,20 @@ export async function parseUploadedExcel(file: File): Promise<ExcelTemplateAnaly
 }
 
 /**
- * Appends invoices into the official template workbook according to the exact schema:
- * - Sales sheet: starts at row 5, formula in col E (`=C{row}+D{row}`)
- * - Purchases sheet: starts at row 4, formula in col E (`=C{row}+D{row}`)
+ * Loads the official fawater_template.xlsx and synchronizes invoices into it.
  */
-export function syncInvoicesToWorkbook(
-  workbook: XLSX.WorkBook,
+export async function generateExportWorkbook(
   invoices: InvoiceRecord[],
-  customFields: CustomField[],
   operationName: string,
   activityType: string
-): Uint8Array {
-  // Ensure required sheets exist
+): Promise<Uint8Array> {
+  const workbook = await loadOfficialTemplateWorkbook();
+
   if (!workbook.Sheets['المبيعات']) {
     const wsSales = XLSX.utils.aoa_to_sheet([
-      [operationName, '', '', '', '', '', '', ''],
-      ['سجل مبيعات المؤسسة', '', '', '', '', '', '', ''],
-      [],
+      [`سجل المبيعات اليومية والأرصدة - ${operationName}`, '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['بيانات المبيعات اليومية', '', '', '', '', 'الأرصدة وتتبع النقدية', '', ''],
       ['التاريخ', 'اليوم', 'المبيعات النقدية (الكاش)', 'الشبكة', 'إجمالي المبيعات', 'رصيد الكاش', 'رصيد الصندوق', 'رصيد الشبكة (البنك)']
     ]);
     XLSX.utils.book_append_sheet(workbook, wsSales, 'المبيعات');
@@ -127,8 +70,8 @@ export function syncInvoicesToWorkbook(
 
   if (!workbook.Sheets['المشتريات والموردين']) {
     const wsPurchases = XLSX.utils.aoa_to_sheet([
-      [operationName, '', '', '', '', ''],
-      ['سجل المشتريات والموردين', '', '', '', '', ''],
+      [`سجل المشتريات والموردين - ${operationName}`, '', '', '', '', ''],
+      ['', '', '', '', '', ''],
       ['التاريخ', 'اسم المورد', 'المبلغ قبل الضريبة', 'ضريبة القيمة المضافة', 'الإجمالي شامل الضريبة', 'الرصيد']
     ]);
     XLSX.utils.book_append_sheet(workbook, wsPurchases, 'المشتريات والموردين');
@@ -136,10 +79,10 @@ export function syncInvoicesToWorkbook(
 
   if (!workbook.Sheets['ملخص الأداء']) {
     const wsSummary = XLSX.utils.aoa_to_sheet([
-      ['تقرير أداء المؤسسة', operationName],
-      ['نوع النشاط:', activityType],
-      [],
-      ['مؤشر الأداء', 'القيمة الإجمالية']
+      ['', `نظام إدارة الحسابات - ${operationName}`],
+      ['', 'ملخص المبيعات اليومية، المشتريات، والأرصدة المالية'],
+      ['', ''],
+      ['', 'إجمالي المبيعات', '', 'إجمالي المشتريات (شامل الضريبة)', '', 'صافي التدفق (المبيعات - المشتريات)']
     ]);
     XLSX.utils.book_append_sheet(workbook, wsSummary, 'ملخص الأداء');
   }
@@ -147,7 +90,6 @@ export function syncInvoicesToWorkbook(
   const wsSales = workbook.Sheets['المبيعات'];
   const wsPurchases = workbook.Sheets['المشتريات والموردين'];
 
-  // Helper to extract existing invoice IDs to prevent duplication
   const getExistingIds = (ws: XLSX.WorkSheet, headerRowIndex: number): Set<string> => {
     const ids = new Set<string>();
     const json = XLSX.utils.sheet_to_json<any>(ws, { header: 1 });
@@ -159,14 +101,13 @@ export function syncInvoicesToWorkbook(
     return ids;
   };
 
-  const salesExisting = getExistingIds(wsSales, 4); // sales header at row 4 (index 3)
-  const purchasesExisting = getExistingIds(wsPurchases, 3); // purchases header at row 3 (index 2)
+  const salesExisting = getExistingIds(wsSales, 4);
+  const purchasesExisting = getExistingIds(wsPurchases, 3);
 
   let totalSales = 0;
   let totalPurchases = 0;
   let totalTax = 0;
 
-  // Read current sheet ranges to determine next row
   const getNextRowIndex = (ws: XLSX.WorkSheet): number => {
     const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:H1');
     return range.e.r + 1;
@@ -188,7 +129,6 @@ export function syncInvoicesToWorkbook(
     if (docType === 'مبيعات' || docType === 'فاتورة ضريبية') {
       if (!salesExisting.has(invId) && !salesExisting.has(invNum)) {
         const rowNum = salesNextRow++;
-        // Formula for Total Sales (Col E = C + D)
         const totalSalesFormula = `=C${rowNum}+D${rowNum}`;
 
         newSalesRows.push([
@@ -203,12 +143,10 @@ export function syncInvoicesToWorkbook(
         ]);
         salesExisting.add(invId);
       }
-      totalSales += Number(inv.grandTotal || (inv.subtotal || 0) + (inv.taxAmount || 0));
+      totalSales += Number(inv.grandTotal || (inv.cashSales || 0) + (inv.networkSales || 0));
     } else {
-      // Purchases / Expenses
       if (!purchasesExisting.has(invId) && !purchasesExisting.has(invNum)) {
         const rowNum = purchasesNextRow++;
-        // Formula for Grand Total (Col E = C + D)
         const grandTotalFormula = `=C${rowNum}+D${rowNum}`;
 
         newPurchaseRows.push([
@@ -227,7 +165,6 @@ export function syncInvoicesToWorkbook(
     totalTax += Number(inv.taxAmount || 0);
   }
 
-  // Append safely
   if (newSalesRows.length > 0) {
     XLSX.utils.sheet_add_aoa(wsSales, newSalesRows, { origin: -1 });
   }
@@ -235,20 +172,18 @@ export function syncInvoicesToWorkbook(
     XLSX.utils.sheet_add_aoa(wsPurchases, newPurchaseRows, { origin: -1 });
   }
 
-  // Update Summary Sheet
   const wsSummary = workbook.Sheets['ملخص الأداء'];
   if (wsSummary) {
     const netIncome = totalSales - totalPurchases;
     XLSX.utils.sheet_add_aoa(wsSummary, [
-      ['تقرير أداء المؤسسة', operationName],
-      ['نوع النشاط:', activityType],
-      ['تاريخ التحديث:', new Date().toISOString().split('T')[0]],
-      [],
-      ['مؤشر الأداء', 'القيمة الإجمالية'],
-      ['إجمالي المبيعات', totalSales],
-      ['إجمالي المشتريات', totalPurchases],
-      ['إجمالي الضرائب', totalTax],
-      ['صافي الإيرادات', netIncome],
+      ['', `نظام إدارة الحسابات - ${operationName}`],
+      ['', 'ملخص المبيعات اليومية، المشتريات، والأرصدة المالية'],
+      ['', ''],
+      ['', 'إجمالي المبيعات', '', 'إجمالي المشتريات (شامل الضريبة)', '', 'صافي التدفق (المبيعات - المشتريات)'],
+      ['', totalSales, '', totalPurchases, '', netIncome],
+      ['', ''],
+      ['', 'آخر رصيد كاش', '', 'آخر رصيد صندوق', '', 'آخر رصيد شبكة (بنك)'],
+      ['', '#N/A', '', '#N/A', '', '#N/A']
     ], { origin: 'A1' });
   }
 
@@ -256,6 +191,19 @@ export function syncInvoicesToWorkbook(
   return new Uint8Array(excelBuffer);
 }
 
-export function downloadWorkbook(workbook: XLSX.WorkBook, filename: string) {
+export async function downloadExportWorkbook(invoices: InvoiceRecord[], operationName: string, activityType: string, filename: string) {
+  const buf = await generateExportWorkbook(invoices, operationName, activityType);
+  const blob = new Blob([buf.buffer as ArrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export async function downloadWorkbook(workbook: XLSX.WorkBook, filename: string) {
   XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`, { cellStyles: true });
 }

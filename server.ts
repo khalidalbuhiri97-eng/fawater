@@ -43,7 +43,7 @@ async function startServer() {
 4. clientTaxId: الرقم الضريبي للعميل (إن وجد).
 5. invoiceNumber: رقم الفاتورة.
 6. invoiceDate: تاريخ الفاتورة المطبوع (بالصيغة YYYY-MM-DD أو كما هو).
-7. documentType: نوع المستند (اختر بدقة من: مبيعات، مشتريات، مصروفات، مرتجعات، فاتورة ضريبية، سند قبض، سند صرف، أخرى).
+7. documentType: نوع المستند (يجب تحليله بدقة شديدة من محتوى الفاتورة والأطراف والعبارات، حصرياً: "مبيعات" إذا كانت صادرة عن المؤسسة لعميل، أو "مشتريات" إذا كانت واردة من مورد للمؤسسة. إذا كان المحتوى غير واضح أو تعذر التحديد، أرجع القيمة "يحتاج تحديد النوع").
 8. currency: العملة (مثل SAR, USD, EUR, AED، أو الافتراضية).
 9. subtotal: الإجمالي قبل الضريبة (رقم فقط بدون عملة).
 10. taxAmount: قيمة الضريبة (رقم فقط).
@@ -61,7 +61,7 @@ async function startServer() {
 - تأكد أن الناتج كائن JSON صالح فقط.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: [
           {
             role: 'user',
