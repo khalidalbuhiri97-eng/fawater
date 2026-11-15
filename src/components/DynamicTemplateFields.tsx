@@ -26,6 +26,12 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         return invoice.invoiceDate || '';
       case 'day':
         return invoice.day || '';
+      case 'invoiceNumber':
+        return invoice.invoiceNumber || '';
+      case 'paymentMethod':
+        return invoice.paymentMethod || 'نقداً';
+      case 'issuerTaxId':
+        return invoice.issuerTaxId || '';
       case 'cashSales':
         return invoice.cashSales;
       case 'networkSales':
@@ -44,6 +50,8 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         return invoice.taxAmount;
       case 'balance':
         return invoice.balance;
+      case 'operationNumber':
+        return '#';
       default:
         if (col.fieldKey.startsWith('extra:')) {
           return invoice.extraColumnsData?.[sheetInfo.sheetName]?.[col.colLetter];
@@ -122,8 +130,17 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
           case 'day':
             next.day = rawValue;
             break;
+          case 'invoiceNumber':
+            next.invoiceNumber = rawValue;
+            break;
+          case 'paymentMethod':
+            next.paymentMethod = rawValue;
+            break;
           case 'issuerName':
             next.issuerName = rawValue;
+            break;
+          case 'issuerTaxId':
+            next.issuerTaxId = rawValue;
             break;
           default:
             if (col.fieldKey.startsWith('extra:')) {
@@ -209,7 +226,22 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
                 <span className="text-[10px] font-mono text-slate-400">عمود {col.colLetter}</span>
               </label>
 
-              {col.kind === 'date' ? (
+              {col.fieldKey === 'operationNumber' ? (
+                <div className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-100 text-xs font-bold text-slate-500 flex items-center justify-between">
+                  <span>رقم تلقائي (#)</span>
+                  <span className="text-[10px] bg-slate-200 px-2 py-0.5 rounded text-slate-700">تلقائي</span>
+                </div>
+              ) : col.fieldKey === 'paymentMethod' ? (
+                <select
+                  value={String(val || 'نقداً')}
+                  onChange={(e) => handleFieldChange(col, e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-900 font-bold focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="نقداً">نقداً</option>
+                  <option value="دين">دين</option>
+                  <option value="أخرى">أخرى</option>
+                </select>
+              ) : col.kind === 'date' ? (
                 <input
                   type="date"
                   value={String(val || '')}

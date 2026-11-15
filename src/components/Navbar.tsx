@@ -10,6 +10,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
 import { Operation, SyncOverview } from '../types';
 
@@ -20,6 +21,8 @@ interface NavbarProps {
   onGoHome: () => void;
   onOpenNewOperation: () => void;
   onDownloadExcel: () => void;
+  onOpenProcessingDialog?: () => void;
+  hasActiveJobs?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -29,6 +32,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onGoHome,
   onOpenNewOperation,
   onDownloadExcel,
+  onOpenProcessingDialog,
+  hasActiveJobs,
 }) => {
   const renderSyncPill = () => {
     if (!syncOverview) return null;
@@ -151,6 +156,22 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {renderSyncPill()}
+
+          {onOpenProcessingDialog && (
+            <button
+              type="button"
+              onClick={onOpenProcessingDialog}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition border ${
+                hasActiveJobs
+                  ? 'bg-blue-600 hover:bg-blue-500 text-white border-blue-500 animate-pulse'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+              }`}
+              title="متابعة حالة معالجة الفواتير في الخلفية"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <span>معالجة الفواتير {hasActiveJobs ? '(قيد المعالجة)' : ''}</span>
+            </button>
+          )}
 
           {currentOperation ? (
             <>

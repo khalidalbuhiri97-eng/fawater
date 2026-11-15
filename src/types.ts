@@ -88,6 +88,7 @@ export interface InvoiceRecord {
   cashBoxBalance?: number;
   networkBalance?: number;
   balance?: number;
+  paymentMethod?: string;
 }
 
 export interface ExportTrackingEntry {

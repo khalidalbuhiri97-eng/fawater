@@ -24,6 +24,7 @@ import { OperationsList } from './components/OperationsList';
 import { NewOperationModal } from './components/NewOperationModal';
 import { OperationDashboard } from './components/OperationDashboard';
 import { ReviewWorkspace } from './components/ReviewWorkspace';
+import { ImageProcessingDialog } from './components/ImageProcessingDialog';
 import {
   AlertCircle,
   CheckCircle2,
@@ -41,6 +42,7 @@ export default function App() {
   const [syncOverview, setSyncOverview] = useState<SyncOverview | undefined>(undefined);
   const [bgStatus, setBgStatus] = useState<BackgroundQueueStatus | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
+  const [isProcessingDialogOpen, setIsProcessingDialogOpen] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'dashboard' | 'review'>('home');
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
@@ -283,6 +285,8 @@ export default function App() {
         }}
         onOpenNewOperation={() => setIsNewModalOpen(true)}
         onDownloadExcel={handleDownloadActiveExcel}
+        onOpenProcessingDialog={() => setIsProcessingDialogOpen(true)}
+        hasActiveJobs={bgStatus?.hasActiveJobs}
       />
 
       {banner && (
@@ -501,6 +505,18 @@ export default function App() {
         isOpen={isNewModalOpen}
         onClose={() => setIsNewModalOpen(false)}
         onOperationCreated={handleOperationCreated}
+      />
+
+      <ImageProcessingDialog
+        isOpen={isProcessingDialogOpen}
+        onClose={() => setIsProcessingDialogOpen(false)}
+        bgStatus={bgStatus}
+        onRetryBatch={handleRetryBatch}
+        onDismissJob={handleDismissBackgroundJob}
+        onOpenReview={(orgId, invId) => {
+          setIsProcessingDialogOpen(false);
+          void handleOpenBatchReview(orgId, invId);
+        }}
       />
     </div>
   );

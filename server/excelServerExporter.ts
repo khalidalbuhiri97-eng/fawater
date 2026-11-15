@@ -70,7 +70,7 @@ function getCellText(cell: ExcelJS.Cell): string {
 
 function classifyColumnKey(sheetName: string, colLetter: string, headerName: string): string {
   if (sheetName === 'المبيعات') {
-    if (headerName.includes('التاريخ')) return 'invoiceDate';
+    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) return 'invoiceDate';
     if (headerName.includes('اليوم')) return 'day';
     if (
       (headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) &&
@@ -84,8 +84,10 @@ function classifyColumnKey(sheetName: string, colLetter: string, headerName: str
     if (headerName.includes('رصيد الصندوق')) return 'cashBoxBalance';
     if (headerName.includes('رصيد الشبكة')) return 'networkBalance';
   } else if (sheetName === 'المشتريات والموردين') {
-    if (headerName.includes('التاريخ')) return 'invoiceDate';
+    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) return 'invoiceDate';
     if (headerName.includes('اسم المورد') || headerName.includes('المورد')) return 'issuerName';
+    if (headerName.includes('الدفع') || headerName.includes('طريقة الدفع')) return 'paymentMethod';
+    if (headerName.includes('رقم الفاتورة')) return 'invoiceNumber';
     if (headerName.includes('قبل الضريبة')) return 'subtotal';
     if (
       (headerName.includes('ضريبة القيمة المضافة') || headerName.includes('الضريبة')) &&
@@ -98,6 +100,8 @@ function classifyColumnKey(sheetName: string, colLetter: string, headerName: str
       return 'formula:purchasesTotal';
     }
     if (headerName.includes('الرصيد')) return 'balance';
+    if (headerName.includes('الرقم الضريبي')) return 'issuerTaxId';
+    if (headerName === '#' || headerName.includes('رقم العملية')) return 'operationNumber';
   }
   return `extra:${colLetter}`;
 }
@@ -139,7 +143,7 @@ async function inspectOfficialTemplate(buffer: Buffer | ArrayBuffer): Promise<{
 
       if (ws.name === 'المبيعات') {
         if (
-          rowCols.some((c) => c.name.includes('التاريخ')) &&
+          rowCols.some((c) => c.name.includes('التاريخ') || c.name.includes('تاريخ') || c.name.includes('تأريخ')) &&
           rowCols.some((c) => c.name.includes('المبيعات') || c.name.includes('الشبكة'))
         ) {
           headerRowNumber = r;
@@ -148,8 +152,9 @@ async function inspectOfficialTemplate(buffer: Buffer | ArrayBuffer): Promise<{
         }
       } else if (ws.name === 'المشتريات والموردين') {
         if (
-          rowCols.some((c) => c.name.includes('التاريخ')) &&
-          rowCols.some((c) => c.name.includes('المورد'))
+          (rowCols.some((c) => c.name.includes('التاريخ') || c.name.includes('تاريخ') || c.name.includes('تأريخ')) &&
+           rowCols.some((c) => c.name.includes('المورد'))) ||
+          rowCols.some((c) => c.name.includes('الدفع') || c.name.includes('#'))
         ) {
           headerRowNumber = r;
           rawHeaders = rowCols;

@@ -102,7 +102,7 @@ function classifyColumnFromTemplate(
   let formulaHint = cellFormula || undefined;
 
   if (ws.name === 'المبيعات') {
-    if (headerName.includes('التاريخ')) fieldKey = 'invoiceDate';
+    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) fieldKey = 'invoiceDate';
     else if (headerName.includes('اليوم')) fieldKey = 'day';
     else if (
       (headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) &&
@@ -119,8 +119,10 @@ function classifyColumnFromTemplate(
     else if (headerName.includes('رصيد الصندوق')) fieldKey = 'cashBoxBalance';
     else if (headerName.includes('رصيد الشبكة')) fieldKey = 'networkBalance';
   } else if (ws.name === 'المشتريات والموردين') {
-    if (headerName.includes('التاريخ')) fieldKey = 'invoiceDate';
+    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) fieldKey = 'invoiceDate';
     else if (headerName.includes('اسم المورد') || headerName.includes('المورد')) fieldKey = 'issuerName';
+    else if (headerName.includes('الدفع') || headerName.includes('طريقة الدفع')) fieldKey = 'paymentMethod';
+    else if (headerName.includes('رقم الفاتورة')) fieldKey = 'invoiceNumber';
     else if (headerName.includes('قبل الضريبة')) fieldKey = 'subtotal';
     else if (
       (headerName.includes('ضريبة القيمة المضافة') || headerName.includes('الضريبة')) &&
@@ -133,6 +135,8 @@ function classifyColumnFromTemplate(
       isFormula = true;
       formulaHint = formulaHint || 'المبلغ قبل الضريبة + ضريبة القيمة المضافة';
     } else if (headerName.includes('الرصيد')) fieldKey = 'balance';
+    else if (headerName.includes('الرقم الضريبي')) fieldKey = 'issuerTaxId';
+    else if (headerName === '#' || headerName.includes('رقم العملية')) fieldKey = 'operationNumber';
   }
 
   let kind: TemplateColumnKind = 'text';
@@ -267,7 +271,7 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
 
       if (ws.name === 'المبيعات') {
         const hasSalesHeaders =
-          rowCols.some((c) => c.name.includes('التاريخ')) &&
+          rowCols.some((c) => c.name.includes('التاريخ') || c.name.includes('تاريخ') || c.name.includes('تأريخ')) &&
           rowCols.some((c) => c.name.includes('المبيعات') || c.name.includes('الشبكة'));
         if (hasSalesHeaders) {
           headerRowNumber = r;
@@ -276,8 +280,9 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
         }
       } else if (ws.name === 'المشتريات والموردين') {
         const hasPurchasesHeaders =
-          rowCols.some((c) => c.name.includes('التاريخ')) &&
-          rowCols.some((c) => c.name.includes('المورد'));
+          (rowCols.some((c) => c.name.includes('التاريخ') || c.name.includes('تاريخ') || c.name.includes('تأريخ')) &&
+           rowCols.some((c) => c.name.includes('المورد'))) ||
+          rowCols.some((c) => c.name.includes('الدفع') || c.name.includes('#'));
         if (hasPurchasesHeaders) {
           headerRowNumber = r;
           rawHeaders = rowCols;
