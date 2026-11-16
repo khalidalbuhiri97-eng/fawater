@@ -218,7 +218,6 @@ export async function appendInvoicesToWorkbookBuffer(
   const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['التاريخ']);
   const purSupplierCol = findColumnByKeywords(purchasesSheetInfo.columns, ['اسم المورد', 'المورد']);
   const purInvoiceNumberCol = findColumnByKeywords(purchasesSheetInfo.columns, ['رقم الفاتورة']);
-  const purPaymentMethodCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الدفع', 'طريقة الدفع']);
   const purTaxIdCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرقم الضريبي']);
   const purSubtotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['المبلغ قبل الضريبة', 'قبل الضريبة']);
   const purTaxCol = findColumnByKeywords(
@@ -330,7 +329,6 @@ export async function appendInvoicesToWorkbookBuffer(
         row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
       }
       if (purInvoiceNumberCol && inv.invoiceNumber) row.getCell(purInvoiceNumberCol.colNumber).value = inv.invoiceNumber;
-      if (purPaymentMethodCol && inv.paymentMethod) row.getCell(purPaymentMethodCol.colNumber).value = inv.paymentMethod;
       if (purTaxIdCol && inv.issuerTaxId) row.getCell(purTaxIdCol.colNumber).value = inv.issuerTaxId;
       if (purSubtotalCol && inv.subtotal !== undefined) {
         row.getCell(purSubtotalCol.colNumber).value = inv.subtotal;
