@@ -144,7 +144,13 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     if (!files.length) return;
     setErrorMsg('');
     setManualFiles((prev) => [...prev, ...files]);
-    try { if (manualFiles.length === 0) { setActiveManualImageIndex(0); await loadManualImage(files[0]); } }
+    try {
+      if (manualFiles.length === 0 || manualCompletedIndexes.length >= manualFiles.length) {
+        const firstNewIndex = manualFiles.length;
+        setActiveManualImageIndex(firstNewIndex);
+        await loadManualImage(files[0]);
+      }
+    }
     catch { setErrorMsg('تعذر قراءة أحد ملفات الصور المختارة.'); }
     e.target.value = '';
   };
