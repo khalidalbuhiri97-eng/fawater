@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   FileSpreadsheet,
   Building2,
@@ -11,7 +11,13 @@ import {
   CheckCircle2,
   AlertTriangle,
   Sparkles,
+  UserRound,
+  Settings,
+  LogOut,
+  X,
+  ShieldCheck,
 } from 'lucide-react';
+import { getSupabaseBrowserClient } from '../auth/supabaseClient';
 import { Operation, SyncOverview } from '../types';
 
 interface NavbarProps {
@@ -35,6 +41,37 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenProcessingDialog,
   hasActiveJobs,
 }) => {
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountEmail, setAccountEmail] = useState('');
+  const [accountName, setAccountName] = useState('');
+  const [logoutBusy, setLogoutBusy] = useState(false);
+  const [accountError, setAccountError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    getSupabaseBrowserClient().auth.getUser().then(({ data }) => {
+      if (!active) return;
+      setAccountEmail(data.user?.email || '');
+      setAccountName(String(data.user?.user_metadata?.full_name || data.user?.user_metadata?.name || ''));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const handleLogout = async () => {
+    setLogoutBusy(true);
+    setAccountError('');
+    try {
+      const { error } = await getSupabaseBrowserClient().auth.signOut();
+      if (error) throw error;
+      setAccountOpen(false);
+    } catch (error: any) {
+      setAccountError(error?.message || 'تعذر تسجيل الخروج. حاول مرة أخرى.');
+    } finally {
+      setLogoutBusy(false);
+    }
+  };
+
   const renderSyncPill = () => {
     if (!syncOverview) return null;
 
@@ -199,8 +236,59 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>إنشاء عملية جديدة</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => { setAccountOpen(true); setSettingsOpen(false); setAccountError(''); }}
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-800 text-slate-200 transition hover:border-emerald-500 hover:bg-slate-700 hover:text-emerald-300"
+            aria-label="فتح القائمة الجانبية للحساب والإعدادات"
+            title="الحساب والإعدادات"
+          >
+            <UserRound className="h-5 w-5" />
+          </button>
         </div>
       </div>
+      {accountOpen && (
+        <div className="fixed inset-0 z-[80]">
+          <button type="button" aria-label="إغلاق القائمة الجانبية" onClick={() => setAccountOpen(false)} className="absolute inset-0 bg-slate-950/50 backdrop-blur-[2px]" />
+          <aside dir="rtl" className="absolute right-0 top-0 flex h-full w-[min(88vw,360px)] flex-col border-l border-slate-200 bg-white text-slate-900 shadow-2xl animate-in slide-in-from-right duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-900 px-5 py-5 text-white">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-emerald-500/15 text-emerald-300"><UserRound className="h-6 w-6" /></div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-bold">{accountName || 'حساب المستخدم'}</div>
+                  <div className="truncate text-xs text-slate-300">{accountEmail || 'حساب Fawater'}</div>
+                </div>
+              </div>
+              <button type="button" onClick={() => setAccountOpen(false)} className="rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto p-4">
+              <div className="px-2 pb-1 text-[11px] font-bold text-slate-400">الحساب</div>
+              <div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3">
+                <UserRound className="h-5 w-5 text-slate-500" />
+                <div className="min-w-0"><div className="text-sm font-semibold">الملف الشخصي</div><div className="truncate text-xs text-slate-500">{accountEmail || 'بيانات الحساب'}</div></div>
+              </div>
+              <button type="button" onClick={() => setSettingsOpen((open) => !open)} className="flex w-full items-center justify-between rounded-xl border border-slate-200 p-3 text-right transition hover:border-emerald-300 hover:bg-emerald-50/50">
+                <span className="flex items-center gap-3"><Settings className="h-5 w-5 text-slate-500" /><span className="text-sm font-semibold">الإعدادات</span></span>
+                <span className="text-xs text-slate-400">{settingsOpen ? 'إخفاء' : 'عرض'}</span>
+              </button>
+              {settingsOpen && (
+                <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                  <div className="flex items-center gap-2 font-semibold text-slate-700"><ShieldCheck className="h-4 w-4 text-emerald-600" /> أمان الحساب</div>
+                  <p className="text-xs leading-6 text-slate-500">يتم تأمين تسجيل الدخول وإدارة الجلسة بواسطة Supabase. استخدم خيار استعادة كلمة المرور من شاشة تسجيل الدخول لتغيير كلمة المرور.</p>
+                  <div className="text-xs text-slate-500">البريد الإلكتروني: <span className="font-medium text-slate-700">{accountEmail || 'غير متاح'}</span></div>
+                </div>
+              )}
+              {accountError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{accountError}</p>}
+            </div>
+            <div className="border-t border-slate-100 p-4">
+              <button type="button" onClick={handleLogout} disabled={logoutBusy} className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-60">
+                {logoutBusy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+                {logoutBusy ? 'جارٍ تسجيل الخروج...' : 'تسجيل الخروج'}
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </header>
   );
 };
