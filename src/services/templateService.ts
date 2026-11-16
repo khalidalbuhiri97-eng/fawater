@@ -302,10 +302,35 @@ export async function validateAndInspectTemplateBuffer(buffer: ArrayBuffer): Pro
       }
     }
 
-    const columns: TemplateColumnInfo[] = rawHeaders.map((h) => ({
-      ...h,
-      ...classifyColumnFromTemplate(ws, dataStartRowNumber, h.colNumber, h.colLetter, h.name),
-    }));
+    const purchaseSchemaByColumn: Array<{ name: string; fieldKey: string; kind: TemplateColumnKind }> = [
+      { name: '#', fieldKey: 'operationNumber', kind: 'text' },
+      { name: 'اسم المورد', fieldKey: 'issuerName', kind: 'text' },
+      { name: 'الدفع', fieldKey: 'paymentMethod', kind: 'text' },
+      { name: 'رقم الفاتورة', fieldKey: 'invoiceNumber', kind: 'text' },
+      { name: 'تأريخ الفاتورة', fieldKey: 'invoiceDate', kind: 'date' },
+      { name: 'المبلغ قبل الضريبة', fieldKey: 'subtotal', kind: 'number' },
+      { name: 'ضريبة القيمة المضافة', fieldKey: 'taxAmount', kind: 'number' },
+      { name: 'المبلغ شامل الضريبة', fieldKey: 'grandTotal', kind: 'number' },
+      { name: 'الرصيد', fieldKey: 'balance', kind: 'number' },
+      { name: 'الرقم الضريبي للمورد', fieldKey: 'issuerTaxId', kind: 'text' },
+    ];
+    const columns: TemplateColumnInfo[] = rawHeaders.map((h) => {
+      if (ws.name === 'المشتريات والموردين' && purchaseSchemaByColumn[h.colNumber - 1]) {
+        const canonical = purchaseSchemaByColumn[h.colNumber - 1];
+        return {
+          ...h,
+          name: canonical.name,
+          fieldKey: canonical.fieldKey,
+          kind: canonical.kind,
+          isFormula: false,
+          formulaHint: undefined,
+        };
+      }
+      return {
+        ...h,
+        ...classifyColumnFromTemplate(ws, dataStartRowNumber, h.colNumber, h.colLetter, h.name),
+      };
+    });
 
     sheets.push({
       sheetName: ws.name,
