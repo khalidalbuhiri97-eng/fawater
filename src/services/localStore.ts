@@ -1,7 +1,16 @@
 import { ExportTrackingRecord, Operation, SyncStatus } from '../types';
 import { TemplateSheetInfo } from './templateService';
 
-export const LOCAL_DB_NAME = 'fawater_local_store_v1';
+export let LOCAL_DB_NAME = 'fawater_local_store_v1_signed_out';
+
+/** Isolate offline records and queued sync work between authenticated accounts. */
+export function setLocalStoreUserScope(userId: string | null): void {
+  const scope = userId && /^[0-9a-f-]{36}$/i.test(userId) ? userId : 'signed_out';
+  if (LOCAL_DB_NAME !== `fawater_local_store_v1_${scope}`) {
+    LOCAL_DB_NAME = `fawater_local_store_v1_${scope}`;
+    dbPromise = null;
+  }
+}
 export const LOCAL_DB_VERSION = 1;
 
 export const STORE_NAMES = {
