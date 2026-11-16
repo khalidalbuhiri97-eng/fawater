@@ -161,6 +161,27 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     try { await loadManualImage(manualFiles[nextIndex]); }
     catch { setErrorMsg('تعذر تحميل الصورة التالية.'); }
   };
+  const removeCurrentManualImage = async () => {
+    const remaining = manualFiles.filter((_, index) => index !== activeManualImageIndex);
+    const nextDrafts: Record<number, InvoiceRecord> = {};
+    Object.entries(manualDrafts).forEach(([key, value]) => {
+      const oldIndex = Number(key);
+      if (oldIndex < activeManualImageIndex) nextDrafts[oldIndex] = value;
+      if (oldIndex > activeManualImageIndex) nextDrafts[oldIndex - 1] = value;
+    });
+    setManualFiles(remaining);
+    setManualDrafts(nextDrafts);
+    setManualCompletedIndexes((prev) => prev.filter((index) => index !== activeManualImageIndex).map((index) => index > activeManualImageIndex ? index - 1 : index));
+    const nextIndex = Math.min(activeManualImageIndex, remaining.length - 1);
+    setActiveManualImageIndex(Math.max(0, nextIndex));
+    if (nextIndex >= 0) {
+      setManualInvoice(nextDrafts[nextIndex] || createEmptyManualInvoice(manualType));
+      await loadManualImage(remaining[nextIndex]);
+    } else {
+      setManualImage(null);
+      setManualInvoice(createEmptyManualInvoice(manualType));
+    }
+  };
   const handleManualTypeSwitch = (nextType: 'مبيعات' | 'مشتريات') => {
     setManualType(nextType);
     setManualInvoice((prev) => ({
@@ -467,7 +488,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                   <div className="flex items-center gap-2 text-xs">
                     <ImageIcon className="w-4 h-4 text-emerald-400" />
                     <span className="font-bold truncate max-w-[240px]">
-                      {manualImage ? manualImage.fileName : 'معاينة صورة الفاتورة (اختيارية في الإدخال اليدوي)'}
+                      {manualImage ? `${manualImage.fileName} · ${activeManualImageIndex + 1} / ${manualFiles.length}` : 'معاينة صور الفاتورة (اختيارية في الإدخال اليدوي)'}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -499,7 +520,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => setManualImage(null)}
+                          onClick={removeCurrentManualImage}
                           className="p-1.5 hover:bg-red-900/60 rounded-lg text-red-300 transition"
                           title="إزالة الصورة"
                         >
