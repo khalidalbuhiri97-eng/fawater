@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { createClient } from '@supabase/supabase-js';
 import { getSupabaseAdmin, testSupabaseConnection } from './server/supabaseAdmin.js';
 import {
   extractInvoiceWithGemini,
@@ -50,6 +51,116 @@ async function startServer() {
       geminiConfigured,
       supabase: supabaseStatus,
     });
+  });
+
+  // =========================================================================
+  // Authentication and tenant authorization for every API route below.
+  // The browser sends a Supabase access token; service-role access is only
+  // used after the user and their organization membership are verified.
+  // =========================================================================
+  app.use('/api', async (req, res, next) => {
+    const authorization = req.headers.authorization || '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+    const url = process.env.SUPABASE_URL;
+    if (!token || !publicKey || !url) {
+      return res.status(401).json({ success: false, error: 'يلزم تسجيل الدخول للمتابعة.' });
+    }
+
+    try {
+      const authClient = createClient(url, publicKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data: authData, error: authError } = await authClient.auth.getUser(token);
+      if (authError || !authData.user) {
+        return res.status(401).json({ success: false, error: 'جلسة الدخول غير صالحة أو انتهت. سجّل الدخول مجدداً.' });
+      }
+      (req as any).authUser = authData.user;
+
+      // Publicly-created accounts can access the app shell but not tenant data.
+      if (req.path === '/health' || req.path === '/supabase/status' || req.path === '/extract-invoice') {
+        return next();
+      }
+
+      const admin = requireSupabaseOr503(res);
+      if (!admin) return;
+      const { data: memberships, error: memberError } = await admin
+        .from('organization_members')
+        .select('organization_id,role')
+        .eq('user_id', authData.user.id)
+        .eq('status', 'active');
+      if (memberError) throw memberError;
+
+      const memberRows = memberships || [];
+      const memberOrgIds = new Set(memberRows.map((m: any) => m.organization_id));
+      const roles = new Map(memberRows.map((m: any) => [m.organization_id, m.role]));
+      let organizationId =
+        req.body?.organization?.id ||
+        req.body?.organizationId ||
+        (typeof req.query.organizationId === 'string' ? req.query.organizationId : '') ||
+        '';
+
+      // Resolve tenant IDs from resource IDs when the client only supplies a record ID.
+      if (!organizationId && req.path.startsWith('/supabase/invoices/')) {
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.params.id).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/attachments/')) {
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.params.invoiceId).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/custom-fields/')) {
+        const { data } = await admin.from('custom_fields').select('organization_id').eq('id', req.params.id).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/exports/')) {
+        const { data } = await admin.from('export_batches').select('organization_id').eq('id', req.params.batchId).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+
+      if (req.path === '/supabase/bootstrap') {
+        if (memberOrgIds.size === 0) {
+          return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب. أنشئ مؤسسة أو اطلب دعوة.' });
+        }
+        res.locals.allowedOrgIds = Array.from(memberOrgIds);
+        return next();
+      }
+
+      // A new organization may be created by any authenticated user. Existing
+      // organizations require an owner/admin before they can be changed.
+      if (req.path === '/supabase/organizations' && req.method === 'POST') {
+        const { data: existing } = await admin.from('organizations').select('id').eq('id', organizationId).maybeSingle();
+        if (!existing) return next();
+      }
+
+      if (!organizationId || !memberOrgIds.has(organizationId)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك عضوية نشطة أو صلاحية الوصول إلى هذه المؤسسة.' });
+      }
+
+      const role = roles.get(organizationId);
+      const isOwnerAdmin = role === 'owner' || role === 'admin';
+      if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && role !== 'owner') {
+        return res.status(403).json({ success: false, error: 'حذف المؤسسة متاح للمالك فقط.' });
+      }
+      if (req.method === 'DELETE' && req.path.startsWith('/supabase/invoices/') && !isOwnerAdmin) {
+        return res.status(403).json({ success: false, error: 'حذف الفواتير متاح للمالك أو المدير فقط.' });
+      }
+      if (req.path.startsWith('/supabase/custom-fields') && !['owner','admin','accountant'].includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'إدارة الحقول المخصصة متاحة للمالك والمدير والمحاسب.' });
+      }
+      if (req.path.startsWith('/supabase/exports') && !['owner','admin','accountant'].includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'تصدير البيانات متاح للمالك والمدير والمحاسب.' });
+      }
+      if (req.path === '/supabase/templates' && !isOwnerAdmin) {
+        return res.status(403).json({ success: false, error: 'تحديث القالب متاح لمالك أو مدير المؤسسة.' });
+      }
+
+      res.locals.organizationRole = role;
+      return next();
+    } catch (error: any) {
+      console.error('API authentication/authorization error:', error?.message || error);
+      return res.status(401).json({ success: false, error: 'تعذر التحقق من صلاحيات الحساب.' });
+    }
   });
 
   // =========================================================================
@@ -235,17 +346,25 @@ async function startServer() {
         return res.status(500).json({ success: false, error: firstErr.message });
       }
 
+      const allowedOrgIds = new Set<string>(res.locals.allowedOrgIds || []);
+      const organizations = (orgsRes.data || []).filter((row: any) => allowedOrgIds.has(row.id));
+      const organizationInvoices = (invRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const invoiceIds = new Set(organizationInvoices.map((row: any) => row.id));
+      const organizationCustomFields = (cfRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const customFieldIds = new Set(organizationCustomFields.map((row: any) => row.id));
+      const exportBatches = (batchRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const exportBatchIds = new Set(exportBatches.map((row: any) => row.id));
       res.json({
         success: true,
         data: {
-          organizations: orgsRes.data || [],
-          invoices: invRes.data || [],
-          invoice_items: itemsRes.data || [],
-          invoice_attachments: attRes.data || [],
-          custom_fields: cfRes.data || [],
-          invoice_custom_values: icvRes.data || [],
-          export_batches: batchRes.data || [],
-          export_batch_items: batchItemsRes.data || [],
+          organizations,
+          invoices: organizationInvoices,
+          invoice_items: (itemsRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id)),
+          invoice_attachments: (attRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id)),
+          custom_fields: organizationCustomFields,
+          invoice_custom_values: (icvRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id) && customFieldIds.has(row.custom_field_id)),
+          export_batches: exportBatches,
+          export_batch_items: (batchItemsRes.data || []).filter((row: any) => exportBatchIds.has(row.export_batch_id) && invoiceIds.has(row.invoice_id)),
           template_versions: tplRes.data || [],
         },
       });
@@ -276,6 +395,18 @@ async function startServer() {
         { onConflict: 'id' }
       );
       if (error) throw error;
+
+      const authUser = (req as any).authUser;
+      if (authUser?.id) {
+        const { error: ownerError } = await client.from('organization_members').upsert({
+          organization_id: id,
+          user_id: authUser.id,
+          role: 'owner',
+          status: 'active',
+          joined_at: new Date().toISOString(),
+        }, { onConflict: 'organization_id,user_id' });
+        if (ownerError) throw ownerError;
+      }
 
       await client.from('audit_logs').insert({
         organization_id: id,
