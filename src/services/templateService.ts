@@ -121,7 +121,7 @@ function classifyColumnFromTemplate(
   } else if (ws.name === 'المشتريات والموردين') {
     if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) fieldKey = 'invoiceDate';
     else if (headerName.includes('اسم المورد') || headerName.includes('المورد')) fieldKey = 'issuerName';
-    else if (headerName.includes('الدفع') || headerName.includes('طريقة الدفع')) fieldKey = 'paymentMethod';
+    else if (headerName.includes('الدفع') || headerName.includes('طريقة الدفع')) fieldKey = 'ignored:paymentMethod';
     else if (headerName.includes('رقم الفاتورة')) fieldKey = 'invoiceNumber';
     else if (headerName.includes('قبل الضريبة')) fieldKey = 'subtotal';
     else if (
