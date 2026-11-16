@@ -557,6 +557,14 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'معرف المؤسسة ومعرف الفاتورة UUID مطلوبان.' });
       }
 
+      // Prevent primary-key collisions from moving an invoice across tenants.
+      const { data: existingInvoice, error: existingInvoiceError } = await client
+        .from('invoices').select('organization_id').eq('id', invoice.id).maybeSingle();
+      if (existingInvoiceError) throw existingInvoiceError;
+      if (existingInvoice && existingInvoice.organization_id !== organization.id) {
+        return res.status(403).json({ success: false, error: 'لا يمكن نقل فاتورة بين المؤسسات.' });
+      }
+
       // Ensure organization exists first
       const { error: orgErr } = await client.from('organizations').upsert(
         {
@@ -712,6 +720,13 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'بيانات المرفق غير مكتملة.' });
       }
 
+      const { data: targetInvoice, error: targetInvoiceError } = await client
+        .from('invoices').select('organization_id').eq('id', invoiceId).maybeSingle();
+      if (targetInvoiceError) throw targetInvoiceError;
+      if (!targetInvoice || targetInvoice.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'الفاتورة لا تتبع المؤسسة المحددة.' });
+      }
+
       const cleanBase64 = stripDataUrlPrefix(imageBase64);
       const safeMime = normalizeMimeType(mimeType, fileName);
       const buf = Buffer.from(cleanBase64, 'base64');
@@ -790,6 +805,12 @@ async function startServer() {
       if (!UUID_REGEX.test(organizationId || '') || !UUID_REGEX.test(field?.id || '')) {
         return res.status(400).json({ success: false, error: 'معرفات UUID للحقل المخصص مطلوبة.' });
       }
+      const { data: existingField, error: existingFieldError } = await client
+        .from('custom_fields').select('organization_id').eq('id', field.id).maybeSingle();
+      if (existingFieldError) throw existingFieldError;
+      if (existingField && existingField.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'لا يمكن نقل حقل مخصص بين المؤسسات.' });
+      }
       const { error } = await client.from('custom_fields').upsert(
         {
           id: field.id,
@@ -848,6 +869,22 @@ async function startServer() {
 
       if (!UUID_REGEX.test(batchId || '') || !UUID_REGEX.test(organizationId || '')) {
         return res.status(400).json({ success: false, error: 'معرفات التصدير UUID مطلوبة.' });
+      }
+
+      const { data: existingBatch, error: existingBatchError } = await client
+        .from('export_batches').select('organization_id').eq('id', batchId).maybeSingle();
+      if (existingBatchError) throw existingBatchError;
+      if (existingBatch && existingBatch.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'دفعة التصدير لا تتبع المؤسسة المحددة.' });
+      }
+      if (Array.isArray(entries) && entries.length > 0) {
+        const invoiceIds = [...new Set(entries.map((entry: any) => entry.invoiceId).filter(Boolean))];
+        const { data: ownedInvoices, error: ownedInvoicesError } = await client
+          .from('invoices').select('id').eq('organization_id', organizationId).in('id', invoiceIds);
+        if (ownedInvoicesError) throw ownedInvoicesError;
+        if ((ownedInvoices || []).length !== invoiceIds.length) {
+          return res.status(403).json({ success: false, error: 'تتضمن دفعة التصدير فواتير لا تتبع المؤسسة.' });
+        }
       }
 
       let storagePath: string | null = null;
