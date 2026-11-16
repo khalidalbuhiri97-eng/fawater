@@ -97,8 +97,13 @@ async function startServer() {
       let organizationId =
         req.body?.organization?.id ||
         req.body?.organizationId ||
+        (req.path === '/supabase/organizations' ? req.body?.id : '') ||
         (typeof req.query.organizationId === 'string' ? req.query.organizationId : '') ||
         '';
+
+      if (!organizationId && req.path.startsWith('/supabase/organizations/')) {
+        organizationId = req.path.split('/')[3] || '';
+      }
 
       // Resolve tenant IDs from resource IDs when the client only supplies a record ID.
       if (!organizationId && req.path.startsWith('/supabase/invoices/')) {
@@ -110,7 +115,7 @@ async function startServer() {
         organizationId = data?.organization_id || '';
       }
       if (!organizationId && req.path.startsWith('/supabase/custom-fields/')) {
-        const { data } = await admin.from('custom_fields').select('organization_id').eq('id', req.params.id).maybeSingle();
+        const { data } = await admin.from('custom_fields').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
         organizationId = data?.organization_id || '';
       }
       if (!organizationId && req.path.startsWith('/supabase/exports/')) {
@@ -445,14 +450,15 @@ async function startServer() {
 
       const authUser = (req as any).authUser;
       if (authUser?.id) {
-        const { error: ownerError } = await client.from('organization_members').upsert({
+        const { error: ownerError } = await client.from('organization_members').insert({
           organization_id: id,
           user_id: authUser.id,
           role: 'owner',
           status: 'active',
           joined_at: new Date().toISOString(),
-        }, { onConflict: 'organization_id,user_id' });
-        if (ownerError) throw ownerError;
+        });
+        // A pre-existing member must never be promoted by an organization upsert.
+        if (ownerError && ownerError.code !== '23505') throw ownerError;
       }
 
       await client.from('audit_logs').insert({
