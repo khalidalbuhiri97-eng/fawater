@@ -48,6 +48,10 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         return invoice.taxAmount;
       case 'balance':
         return invoice.balance;
+      case 'grandTotal':
+        return invoice.grandTotal;
+      case 'paymentMethod':
+        return invoice.customFieldsValues?.__official_payment_method || '';
       case 'operationNumber':
         return '#';
       default:
@@ -109,6 +113,9 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
           case 'balance':
             next.balance = numVal;
             break;
+          case 'grandTotal':
+            next.grandTotal = numVal;
+            break;
           default:
             if (col.fieldKey.startsWith('extra:')) {
               next.extraColumnsData = {
@@ -137,6 +144,9 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
           case 'issuerTaxId':
             next.issuerTaxId = rawValue;
             break;
+          case 'paymentMethod':
+            next.customFieldsValues = { ...(next.customFieldsValues || {}), __official_payment_method: rawValue };
+            break;
           default:
             if (col.fieldKey.startsWith('extra:')) {
               next.extraColumnsData = {
@@ -150,12 +160,12 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         }
       }
 
-      // Sync grandTotal cleanly when source values exist
-      if (next.documentType === 'مبيعات') {
+      // Recalculate totals from source amounts, but preserve an explicit edit to the gross-total field.
+      if (col.fieldKey !== 'grandTotal' && next.documentType === 'مبيعات') {
         if (next.cashSales !== undefined || next.networkSales !== undefined) {
           next.grandTotal = Number(next.cashSales ?? 0) + Number(next.networkSales ?? 0);
         }
-      } else if (next.documentType === 'مشتريات') {
+      } else if (col.fieldKey !== 'grandTotal' && next.documentType === 'مشتريات') {
         if (next.subtotal !== undefined || next.taxAmount !== undefined) {
           next.grandTotal = Number(next.subtotal ?? 0) + Number(next.taxAmount ?? 0);
         }

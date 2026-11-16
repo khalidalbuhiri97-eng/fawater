@@ -220,6 +220,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         Boolean(manualInvoice.issuerName?.trim()) ||
         manualInvoice.subtotal !== undefined ||
         manualInvoice.taxAmount !== undefined ||
+        manualInvoice.grandTotal !== undefined ||
         manualInvoice.balance !== undefined;
       if (!hasAnyPurchase) {
         setErrorMsg('يرجى إدخال اسم المورد أو المبالغ في حقول المشتريات.');
