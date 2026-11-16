@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   Upload,
+  PenLine,
   FileSpreadsheet,
   DollarSign,
   TrendingUp,
@@ -86,19 +87,12 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 relative z-10 shrink-0">
-          <button
-            onClick={() => openUploadModal('manual')}
-            className="flex items-center gap-2 px-5 py-3.5 bg-slate-800 hover:bg-slate-700 text-white rounded-2xl font-bold border border-slate-600 shadow-md transition"
-          >
-            <span>إدخال يدوي</span>
+        <div className="relative z-10 flex shrink-0 items-center gap-1.5">
+          <button type="button" onClick={() => openUploadModal('manual')} title="إدخال يدوي" aria-label="إدخال يدوي" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-600 bg-slate-800 text-white shadow-sm transition hover:bg-slate-700">
+            <PenLine className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => openUploadModal('ai')}
-            className="flex items-center gap-2 px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold shadow-lg transition transform hover:-translate-y-0.5"
-          >
-            <Upload className="w-5 h-5" />
-            <span>استخراج بالذكاء الاصطناعي</span>
+          <button type="button" onClick={() => openUploadModal('ai')} title="استخراج بالذكاء الاصطناعي" aria-label="استخراج بالذكاء الاصطناعي" className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm transition hover:bg-emerald-500">
+            <Sparkles className="h-4 w-4" />
           </button>
         </div>
       </div>
