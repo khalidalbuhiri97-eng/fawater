@@ -104,7 +104,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
   if (!currentInvoice) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-16 text-center">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-100 px-4 py-16 text-center">
         <h3 className="text-xl font-bold text-slate-800 mb-2">لا توجد فواتير للمراجعة</h3>
         <p className="text-slate-500 mb-6">يرجى رفع صور أو إضافة فواتير جديدة أولاً.</p>
         <button
@@ -306,13 +306,13 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col overflow-hidden bg-slate-100 p-2 text-slate-950 sm:p-3">
       {/* Top Header & Navigation */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 shadow-xs sm:px-3">
         <div className="flex items-center gap-3">
           <button
             onClick={onBackToDashboard}
-            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+            className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-[11px] font-bold text-slate-700 transition hover:bg-slate-200 sm:px-3"
           >
             العودة للوحة التحكم
           </button>
@@ -342,7 +342,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           <button
             disabled={currentIndex === 0}
             onClick={() => onSelectInvoice(invoices[currentIndex - 1].id)}
-            className="flex items-center gap-1 px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
+            className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
           >
             <ChevronRight className="w-4 h-4" />
             <span>السابق</span>
@@ -360,7 +360,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
       {msg && (
         <div
-          className={`p-4 rounded-2xl text-sm font-medium flex items-center gap-2 ${
+          className={`mx-1 my-1 flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium ${
             msg.type === 'success'
               ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
               : 'bg-red-50 border border-red-200 text-red-800'
@@ -414,11 +414,11 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       )}
 
       {/* Split Screen Layout: Fixed/Sticky Image Viewer (Left) + Independent Scrollable Form Fields (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,40dvh)_minmax(0,1fr)] gap-2 overflow-hidden p-1 lg:grid-cols-12 lg:grid-rows-1 lg:gap-3">
         {/* Left Column (Sticky Image Viewer - remains fixed and visible while scrolling form fields on desktop; top fixed container on mobile) */}
-        <div className="lg:col-span-5 lg:sticky lg:top-6 space-y-4">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="bg-slate-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-h-0 flex-col gap-2 overflow-hidden lg:col-span-7">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 bg-slate-900 px-3 py-2 text-white">
               <div className="flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-emerald-400" />
                 <span className="text-xs font-bold truncate max-w-[200px]">
@@ -450,20 +450,20 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
               </div>
             </div>
 
-            <div className="p-4 bg-slate-950 flex items-center justify-center min-h-[300px] max-h-[480px] overflow-auto">
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-950 p-2 sm:p-3">
               {activeImg?.base64 ? (
                 activeImg.mimeType === 'application/pdf' ? (
                   <embed
                     src={`data:application/pdf;base64,${activeImg.base64}`}
                     type="application/pdf"
-                    className="w-full h-[380px] rounded-lg"
+                    className="h-full min-h-[220px] w-full rounded-lg"
                   />
                 ) : (
                   <img
                     src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`}
                     alt="معاينة الفاتورة"
                     style={{ transform: `scale(${zoom})`, transition: 'transform 0.2s ease' }}
-                    className="max-h-[420px] object-contain rounded-lg shadow-md"
+                    className="h-auto max-h-full max-w-full object-contain rounded-lg shadow-md"
                   />
                 )
               ) : (
@@ -472,13 +472,13 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             </div>
 
             {activeImg?.base64 && (
-              <div className="p-3 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-800 bg-slate-900 px-2 py-1.5">
                 <select
                   value={aiClassifyHint}
                   onChange={(e) => setAiClassifyHint(e.target.value as 'auto' | 'مبيعات' | 'مشتريات')}
                   disabled={extractingSingle}
                   aria-label="تصنيف الفاتورة للذكاء الاصطناعي"
-                  className="px-2.5 py-1.5 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg text-xs font-semibold outline-none focus:ring-1 focus:ring-emerald-500"
+                  className="max-w-[118px] rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-semibold text-slate-100 outline-none focus:ring-1 focus:ring-emerald-500"
                 >
                   <option value="auto">تلقائي (AI)</option>
                   <option value="مبيعات">مبيعات</option>
@@ -487,10 +487,10 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 <button
                   onClick={handleRunAiForThis}
                   disabled={extractingSingle}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
+                  title="إعادة تحليل بالذكاء الاصطناعي" aria-label="إعادة تحليل بالذكاء الاصطناعي" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-600 text-white shadow-sm transition hover:bg-emerald-500 disabled:bg-slate-700"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>{extractingSingle ? 'جاري التحليل...' : 'إعادة تحليل بالـ AI'}</span>
+                  <span className="sr-only">{extractingSingle ? 'جاري التحليل...' : 'إعادة تحليل بالـ AI'}</span>
                 </button>
               </div>
             )}
@@ -498,7 +498,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
           {/* Thumbnails strip */}
           {invoices.length > 1 && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-3 shadow-xs space-y-2">
+            <div className="shrink-0 space-y-1 rounded-xl border border-slate-200 bg-white p-2 shadow-xs">
               <div className="text-[11px] font-bold text-slate-600">فواتير الدفعة ({invoices.length})</div>
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {invoices.map((inv, idx) => {
@@ -535,8 +535,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         </div>
 
         {/* Right Column (Scrollable Form Fields Area with NO duplicate fields) */}
-        <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-xs p-6 space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+        <div className="min-h-0 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xs sm:p-4 lg:col-span-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
             <div>
               <h3 className="font-extrabold text-lg text-slate-900">
                 {isSales
@@ -551,7 +551,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             </div>
             <button
               onClick={handleApproveAndNext}
-              className="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-sm font-bold shadow-md transition"
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm transition hover:bg-emerald-500"
             >
               <Save className="w-4 h-4" />
               <span>حفظ واعتماد الفاتورة لـ Excel</span>
@@ -559,7 +559,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           </div>
 
           {/* Independent Document Type Selector per Invoice */}
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+          <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="text-xs font-bold text-slate-800">تصنيف الفاتورة (الورقة المستهدفة في Excel):</label>
               {currentInvoice.classificationReason && (
