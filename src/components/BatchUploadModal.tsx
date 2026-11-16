@@ -79,7 +79,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   // AI mode state
   const [aiDefaultClassification, setAiDefaultClassification] = useState<AiClassificationChoice>('auto');
   const [selectedFiles, setSelectedFiles] = useState<
-    { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[]
+    { file: File; classification: AiClassificationChoice }[]
   >([]);
   const [extracting, setExtracting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -256,29 +256,13 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setSelectedFiles((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleAiFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
-    const files = Array.from(e.target.files);
+  const handleAiFilesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter((file) => file.type.startsWith('image/') || file.type === 'application/pdf');
+    if (!files.length) return;
     setErrorMsg('');
-
-    const newItems: { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[] = [];
-    for (const file of files) {
-      try {
-        const base64 = await fileToBase64(file);
-        newItems.push({
-          file,
-          base64,
-          mimeType: file.type || 'image/jpeg',
-          classification: aiDefaultClassification,
-        });
-      } catch (err) {
-        console.error('Error reading file:', err);
-        setErrorMsg('تعذر قراءة أحد الملفات المختارة.');
-      }
-    }
-    setSelectedFiles((prev) => [...prev, ...newItems]);
+    setSelectedFiles((prev) => [...prev, ...files.map((file) => ({ file, classification: aiDefaultClassification }))]);
+    e.target.value = '';
   };
-
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0) return;
 
@@ -288,58 +272,43 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setErrorMsg('');
 
     try {
-      const preparedFiles: Array<{
-        invoiceId: string;
-        imageBase64: string;
-        mimeType: string;
-        fileName: string;
-        fileSize: number;
-        manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
-      }> = [];
-
-      for (const [index, item] of selectedFiles.entries()) {
-        const invId = generateUuid();
-        try {
-          await saveInvoiceImage(invId, item.base64, item.mimeType, {
-            organizationId: operation.id,
-            fileName: item.file.name,
-            fileSize: item.file.size,
-            enqueueSync: false,
-          });
-        } catch (err) {
-          console.error('IndexedDB save image error:', err);
+      const allInitialInvoices: InvoiceRecord[] = [];
+      let processedCount = 0;
+      // Sequential chunks keep each JSON request below the server's 50 MB limit.
+      // Files are encoded only while their chunk is being submitted.
+      while (processedCount < selectedFiles.length) {
+        const chunk: typeof selectedFiles = [];
+        let chunkBytes = 0;
+        while (processedCount + chunk.length < selectedFiles.length && chunk.length < 5) {
+          const candidate = selectedFiles[processedCount + chunk.length];
+          if (chunk.length > 0 && chunkBytes + candidate.file.size > 24 * 1024 * 1024) break;
+          if (candidate.file.size > 30 * 1024 * 1024) throw new Error(`الملف "${candidate.file.name}" كبير جداً. يرجى ضغطه إلى أقل من 30 ميغابايت.`);
+          chunk.push(candidate);
+          chunkBytes += candidate.file.size;
         }
-
-        preparedFiles.push({
-          invoiceId: invId,
-          imageBase64: item.base64,
-          mimeType: item.mimeType,
-          fileName: item.file.name,
-          fileSize: item.file.size,
-          manualDocumentType: item.classification,
-        });
-        setUploadProgress(Math.min(85, Math.round(5 + ((index + 1) / selectedFiles.length) * 80)));
-        setUploadProgressLabel(`تم تجهيز ${index + 1} من ${selectedFiles.length} فاتورة`);
+        const preparedFiles: Array<{ invoiceId: string; imageBase64: string; mimeType: string; fileName: string; fileSize: number; manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات' }> = [];
+        for (const item of chunk) {
+          const invId = generateUuid();
+          const mimeType = item.file.type || 'image/jpeg';
+          const base64 = await fileToBase64(item.file);
+          try { await saveInvoiceImage(invId, base64, mimeType, { organizationId: operation.id, fileName: item.file.name, fileSize: item.file.size, enqueueSync: false }); }
+          catch (err) { console.error('IndexedDB save image error:', err); }
+          preparedFiles.push({ invoiceId: invId, imageBase64: base64, mimeType, fileName: item.file.name, fileSize: item.file.size, manualDocumentType: item.classification });
+        }
+        setUploadProgress(Math.min(88, Math.round(5 + ((processedCount + chunk.length) / selectedFiles.length) * 80)));
+        setUploadProgressLabel(`تم تجهيز ${processedCount + chunk.length} من ${selectedFiles.length} صورة`);
+        const queued = await enqueueAiBackgroundBatch({ organization: operation, files: preparedFiles });
+        allInitialInvoices.push(...queued.initialInvoices);
+        onBackgroundBatchQueued?.(queued.batchId);
+        processedCount += chunk.length;
       }
-
-      setUploadProgress(92);
-      setUploadProgressLabel('جدولة الفواتير للمعالجة في الخلفية...');
-      const queued = await enqueueAiBackgroundBatch({
-        organization: operation,
-        files: preparedFiles,
-      });
-      setUploadProgress(100);
-      setUploadProgressLabel('اكتمل الرفع والجدولة بنجاح');
-
+      setUploadProgress(96);
+      setUploadProgressLabel('حفظ الفواتير المجدولة...');
       const nowIso = new Date().toISOString();
-      onUpdateOperation({
-        ...operation,
-        invoices: [...queued.initialInvoices, ...(operation.invoices || [])],
-        updatedAt: nowIso,
-      });
-
+      onUpdateOperation({ ...operation, invoices: [...allInitialInvoices, ...(operation.invoices || [])], updatedAt: nowIso });
+      setUploadProgress(100);
+      setUploadProgressLabel(`تمت جدولة ${allInitialInvoices.length} صورة بنجاح`);
       setSelectedFiles([]);
-      onBackgroundBatchQueued?.(queued.batchId);
       onClose();
     } catch (err: any) {
       setErrorMsg(err?.message || 'تعذر بدء المعالجة في الخلفية.');
@@ -461,7 +430,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             /* ==================== MANUAL MODE ==================== */
             <div className="space-y-5">
               {/* 1. Preview Area ON TOP (always visible when uploaded, never disappears while filling fields) */}
-              <div className="rounded-2xl border border-slate-200 overflow-hidden bg-slate-950">
+              <div className="sticky top-0 z-30 rounded-2xl border border-slate-200 overflow-hidden bg-slate-950 shadow-lg">
                 <div className="bg-slate-900 text-white px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs">
                     <ImageIcon className="w-4 h-4 text-emerald-400" />
