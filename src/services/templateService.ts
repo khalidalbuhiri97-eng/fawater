@@ -140,9 +140,19 @@ function classifyColumnFromTemplate(
   }
 
   let kind: TemplateColumnKind = 'text';
-  if (isFormula) {
+  if (isFormula || fieldKey.startsWith('formula:')) {
     kind = 'formula';
-  } else if (numFmt.includes('yy') || numFmt.includes('mm-dd') || headerName.includes('التاريخ')) {
+  } else if (fieldKey === 'invoiceDate') {
+    // Header semantics take precedence over Excel cell formatting.
+    // Some supplier-name cells inherit a date number format from the template.
+    kind = 'date';
+  } else if (fieldKey !== `extra:${colLetter}`) {
+    const numericFields = new Set([
+      'cashSales', 'networkSales', 'cashBalance', 'cashBoxBalance',
+      'networkBalance', 'subtotal', 'taxAmount', 'balance',
+    ]);
+    kind = numericFields.has(fieldKey) ? 'number' : 'text';
+  } else if (numFmt.includes('yy') || numFmt.includes('mm-dd') || headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) {
     kind = 'date';
   } else if (
     numFmt.includes('#') ||
