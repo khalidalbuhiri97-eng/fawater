@@ -342,9 +342,17 @@ async function startServer() {
       typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
         ? req.query.organizationId.trim()
         : (res.locals.defaultOrganizationId as string | undefined);
+    const allowedOrgIds = (res.locals.allowedOrgIds as string[] | undefined) || [];
+    const scopedStatuses = organizationId
+      ? [batchQueue.getStatus(organizationId)]
+      : allowedOrgIds.map((id) => batchQueue.getStatus(id));
+    const aiBatches = scopedStatuses.flatMap((status) => status.aiBatches);
+    const exportJobs = scopedStatuses.flatMap((status) => status.exportJobs);
     res.json({
       success: true,
-      ...batchQueue.getStatus(organizationId),
+      hasActiveJobs: scopedStatuses.some((status) => status.hasActiveJobs),
+      aiBatches,
+      exportJobs,
     });
   });
 
