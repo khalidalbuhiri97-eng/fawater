@@ -48,6 +48,10 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         return invoice.taxAmount;
       case 'balance':
         return invoice.balance;
+      case 'grandTotal':
+        return invoice.grandTotal;
+      case 'paymentMethod':
+        return invoice.customFieldsValues?.__official_payment_method || '';
       case 'operationNumber':
         return '#';
       default:
@@ -109,6 +113,9 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
           case 'balance':
             next.balance = numVal;
             break;
+          case 'grandTotal':
+            next.grandTotal = numVal;
+            break;
           default:
             if (col.fieldKey.startsWith('extra:')) {
               next.extraColumnsData = {
@@ -136,6 +143,9 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
             break;
           case 'issuerTaxId':
             next.issuerTaxId = rawValue;
+            break;
+          case 'paymentMethod':
+            next.customFieldsValues = { ...(next.customFieldsValues || {}), __official_payment_method: rawValue };
             break;
           default:
             if (col.fieldKey.startsWith('extra:')) {
