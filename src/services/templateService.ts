@@ -101,72 +101,53 @@ function classifyColumnFromTemplate(
   let isFormula = Boolean(cellFormula);
   let formulaHint = cellFormula || undefined;
 
+  if (ws.name === 'المشتريات والموردين') {
+    // The approved supplier sheet has a fixed, explicit schema. Never infer
+    // these field types from Excel number formats or formulas in sample rows.
+    const normalizedHeader = headerName
+      .replace(/[\u064B-\u065F\u0670ـ]/g, '')
+      .replace(/[\\s\\u00A0]+/g, ' ')
+      .trim();
+    const purchaseFields: Record<string, { fieldKey: string; kind: TemplateColumnKind }> = {
+      '#': { fieldKey: 'operationNumber', kind: 'text' },
+      'اسم المورد': { fieldKey: 'issuerName', kind: 'text' },
+      'الدفع': { fieldKey: 'paymentMethod', kind: 'text' },
+      'طريقة الدفع': { fieldKey: 'paymentMethod', kind: 'text' },
+      'رقم الفاتورة': { fieldKey: 'invoiceNumber', kind: 'text' },
+      'تأريخ الفاتورة': { fieldKey: 'invoiceDate', kind: 'date' },
+      'تاريخ الفاتورة': { fieldKey: 'invoiceDate', kind: 'date' },
+      'المبلغ قبل الضريبة': { fieldKey: 'subtotal', kind: 'number' },
+      'ضريبة القيمة المضافة': { fieldKey: 'taxAmount', kind: 'number' },
+      'المبلغ شامل الضريبة': { fieldKey: 'grandTotal', kind: 'number' },
+      'الرصيد': { fieldKey: 'balance', kind: 'number' },
+      'الرقم الضريبي للمورد': { fieldKey: 'issuerTaxId', kind: 'text' },
+    };
+    const canonical = purchaseFields[normalizedHeader];
+    if (canonical) {
+      return { kind: canonical.kind, isFormula: false, formulaHint: undefined, fieldKey: canonical.fieldKey };
+    }
+  }
+
   if (ws.name === 'المبيعات') {
     if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) fieldKey = 'invoiceDate';
     else if (headerName.includes('اليوم')) fieldKey = 'day';
-    else if (
-      (headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) &&
-      !headerName.includes('رصيد')
-    ) {
-      fieldKey = 'cashSales';
-    } else if (headerName.includes('الشبكة') && !headerName.includes('رصيد')) {
-      fieldKey = 'networkSales';
-    } else if (headerName.includes('إجمالي المبيعات') || headerName.includes('الإجمالي')) {
-      fieldKey = 'formula:salesTotal';
-      isFormula = true;
-      formulaHint = formulaHint || 'المبيعات النقدية + الشبكة';
+    else if ((headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) && !headerName.includes('رصيد')) fieldKey = 'cashSales';
+    else if (headerName.includes('الشبكة') && !headerName.includes('رصيد')) fieldKey = 'networkSales';
+    else if (headerName.includes('إجمالي المبيعات') || headerName.includes('الإجمالي')) {
+      fieldKey = 'formula:salesTotal'; isFormula = true; formulaHint = formulaHint || 'المبيعات النقدية + الشبكة';
     } else if (headerName.includes('رصيد الكاش')) fieldKey = 'cashBalance';
     else if (headerName.includes('رصيد الصندوق')) fieldKey = 'cashBoxBalance';
     else if (headerName.includes('رصيد الشبكة')) fieldKey = 'networkBalance';
-  } else if (ws.name === 'المشتريات والموردين') {
-    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) fieldKey = 'invoiceDate';
-    else if (headerName.includes('اسم المورد') || headerName.includes('المورد')) fieldKey = 'issuerName';
-    else if (headerName.includes('الدفع') || headerName.includes('طريقة الدفع')) fieldKey = 'ignored:paymentMethod';
-    else if (headerName.includes('رقم الفاتورة')) fieldKey = 'invoiceNumber';
-    else if (headerName.includes('قبل الضريبة')) fieldKey = 'subtotal';
-    else if (
-      (headerName.includes('ضريبة القيمة المضافة') || headerName.includes('الضريبة')) &&
-      !headerName.includes('قبل الضريبة') &&
-      !headerName.includes('شامل الضريبة')
-    ) {
-      fieldKey = 'taxAmount';
-    } else if (headerName.includes('شامل الضريبة') || headerName.includes('الإجمالي')) {
-      fieldKey = 'formula:purchasesTotal';
-      isFormula = true;
-      formulaHint = formulaHint || 'المبلغ قبل الضريبة + ضريبة القيمة المضافة';
-    } else if (headerName.includes('الرصيد')) fieldKey = 'balance';
-    else if (headerName.includes('الرقم الضريبي')) fieldKey = 'issuerTaxId';
-    else if (headerName === '#' || headerName.includes('رقم العملية')) fieldKey = 'operationNumber';
   }
 
   let kind: TemplateColumnKind = 'text';
-  if (isFormula || fieldKey.startsWith('formula:')) {
-    kind = 'formula';
-  } else if (fieldKey === 'invoiceDate') {
-    // Header semantics take precedence over Excel cell formatting.
-    // Some supplier-name cells inherit a date number format from the template.
-    kind = 'date';
-  } else if (fieldKey !== `extra:${colLetter}`) {
-    const numericFields = new Set([
-      'cashSales', 'networkSales', 'cashBalance', 'cashBoxBalance',
-      'networkBalance', 'subtotal', 'taxAmount', 'balance',
-    ]);
+  if (isFormula || fieldKey.startsWith('formula:')) kind = 'formula';
+  else if (fieldKey === 'invoiceDate') kind = 'date';
+  else if (fieldKey !== `extra:${colLetter}`) {
+    const numericFields = new Set(['cashSales', 'networkSales', 'cashBalance', 'cashBoxBalance', 'networkBalance', 'subtotal', 'taxAmount', 'grandTotal', 'balance']);
     kind = numericFields.has(fieldKey) ? 'number' : 'text';
-  } else if (numFmt.includes('yy') || numFmt.includes('mm-dd') || headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) {
-    kind = 'date';
-  } else if (
-    numFmt.includes('#') ||
-    numFmt.includes('0.00') ||
-    headerName.includes('المبلغ') ||
-    headerName.includes('ضريبة') ||
-    headerName.includes('رصيد') ||
-    headerName.includes('الرصيد') ||
-    headerName.includes('النقدية') ||
-    headerName.includes('الشبكة')
-  ) {
-    kind = 'number';
-  }
-
+  } else if (numFmt.includes('yy') || numFmt.includes('mm-dd') || headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) kind = 'date';
+  else if (numFmt.includes('#') || numFmt.includes('0.00') || headerName.includes('المبلغ') || headerName.includes('ضريبة') || headerName.includes('رصيد') || headerName.includes('الرصيد') || headerName.includes('النقدية') || headerName.includes('الشبكة')) kind = 'number';
   return { kind, isFormula, formulaHint, fieldKey };
 }
 
