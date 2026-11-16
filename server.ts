@@ -138,10 +138,13 @@ async function startServer() {
 
       if (req.path.startsWith('/background/ai-batches/') && req.path.endsWith('/retry')) {
         const batchId = req.path.split('/')[3];
-        const owned = Array.from(memberOrgIds).some((orgId: any) =>
+        const ownedOrgId = Array.from(memberOrgIds).find((orgId: any) =>
           batchQueue.getStatus(orgId).aiBatches.some((b: any) => b.batchId === batchId)
         );
-        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على الدفعة.' });
+        if (!ownedOrgId) return res.status(404).json({ success: false, error: 'لم يتم العثور على الدفعة.' });
+        if (!['owner','admin','accountant','sales','employee'].includes(roles.get(ownedOrgId) as string)) {
+          return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إعادة معالجة الفواتير.' });
+        }
         return next();
       }
       if (req.path.startsWith('/background/exports/') && req.path.endsWith('/download')) {
@@ -180,6 +183,12 @@ async function startServer() {
         if (!['owner','admin'].includes(currentRole as string)) {
           return res.status(403).json({ success: false, error: 'تعديل إعدادات المؤسسة متاح للمالك أو المدير.' });
         }
+      }
+      if (req.path === '/background/ai-batches' && !['owner','admin','accountant','sales','employee'].includes(roles.get(organizationId) as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إضافة فواتير إلى المعالجة.' });
+      }
+      if (req.path === '/background/exports' && !['owner','admin','accountant'].includes(roles.get(organizationId) as string)) {
+        return res.status(403).json({ success: false, error: 'تصدير ملفات المؤسسة متاح للمالك والمدير والمحاسب.' });
       }
 
       if (!organizationId || !memberOrgIds.has(organizationId)) {
