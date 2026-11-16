@@ -160,8 +160,8 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         }
       }
 
-      // Sync grandTotal cleanly when source values exist
-      if (next.documentType === 'مبيعات') {
+      // Recalculate totals from source amounts, but preserve an explicit edit to the gross-total field.
+      if (col.fieldKey !== 'grandTotal' && next.documentType === 'مبيعات') {
         if (next.cashSales !== undefined || next.networkSales !== undefined) {
           next.grandTotal = Number(next.cashSales ?? 0) + Number(next.networkSales ?? 0);
         }
