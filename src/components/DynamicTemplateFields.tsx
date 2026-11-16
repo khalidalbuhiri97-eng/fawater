@@ -28,8 +28,6 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         return invoice.day || '';
       case 'invoiceNumber':
         return invoice.invoiceNumber || '';
-      case 'paymentMethod':
-        return invoice.paymentMethod || 'نقداً';
       case 'issuerTaxId':
         return invoice.issuerTaxId || '';
       case 'cashSales':
@@ -133,9 +131,6 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
           case 'invoiceNumber':
             next.invoiceNumber = rawValue;
             break;
-          case 'paymentMethod':
-            next.paymentMethod = rawValue;
-            break;
           case 'issuerName':
             next.issuerName = rawValue;
             break;
@@ -184,7 +179,7 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {sheetInfo.columns.map((col) => {
+        {sheetInfo.columns.filter((col) => !col.fieldKey.startsWith('ignored:')).map((col) => {
           const val = getFieldValue(col);
           const isDateMissing = col.fieldKey === 'invoiceDate' && !String(val || '').trim();
 
@@ -231,16 +226,6 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
                   <span>رقم تلقائي (#)</span>
                   <span className="text-[10px] bg-slate-200 px-2 py-0.5 rounded text-slate-700">تلقائي</span>
                 </div>
-              ) : col.fieldKey === 'paymentMethod' ? (
-                <select
-                  value={String(val || 'نقداً')}
-                  onChange={(e) => handleFieldChange(col, e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs outline-none bg-white text-slate-900 font-bold focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="نقداً">نقداً</option>
-                  <option value="دين">دين</option>
-                  <option value="أخرى">أخرى</option>
-                </select>
               ) : col.kind === 'date' ? (
                 <input
                   type="date"
