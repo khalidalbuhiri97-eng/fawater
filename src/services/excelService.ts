@@ -223,8 +223,11 @@ export async function appendInvoicesToWorkbookBuffer(
     ['ضريبة القيمة المضافة', 'الضريبة'],
     ['قبل الضريبة', 'شامل الضريبة']
   );
-  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الإجمالي شامل الضريبة', 'الإجمالي']);
+  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['شامل الضريبة', 'الإجمالي']);
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
+  const purPaymentCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الدفع', 'طريقة الدفع']);
+  const purInvoiceNumberCol = findColumnByKeywords(purchasesSheetInfo.columns, ['رقم الفاتورة']);
+  const purTaxIdCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرقم الضريبي']);
 
   const seenIds = new Set<string>(alreadyExportedIds);
   const entries: ExportTrackingEntry[] = [];
@@ -326,6 +329,9 @@ export async function appendInvoicesToWorkbookBuffer(
       if (purSupplierCol && inv.issuerName) {
         row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
       }
+      if (purPaymentCol && inv.paymentMethod) row.getCell(purPaymentCol.colNumber).value = inv.paymentMethod;
+      if (purInvoiceNumberCol && inv.invoiceNumber) row.getCell(purInvoiceNumberCol.colNumber).value = inv.invoiceNumber;
+      if (purTaxIdCol && inv.issuerTaxId) row.getCell(purTaxIdCol.colNumber).value = inv.issuerTaxId;
       if (purSubtotalCol && inv.subtotal !== undefined) {
         row.getCell(purSubtotalCol.colNumber).value = inv.subtotal;
       }
@@ -334,8 +340,8 @@ export async function appendInvoicesToWorkbookBuffer(
       }
       if (purTotalCol) {
         if (inv.subtotal !== undefined || inv.taxAmount !== undefined) {
-          const cCol = purSubtotalCol?.colLetter || 'C';
-          const dCol = purTaxCol?.colLetter || 'D';
+          const cCol = purSubtotalCol?.colLetter || 'G';
+          const dCol = purTaxCol?.colLetter || 'H';
           const calcResult = Number(inv.subtotal ?? 0) + Number(inv.taxAmount ?? 0);
           row.getCell(purTotalCol.colNumber).value = {
             formula: `${cCol}${nextPurchasesRow}+${dCol}${nextPurchasesRow}`,
@@ -372,6 +378,31 @@ export async function appendInvoicesToWorkbookBuffer(
       });
       nextPurchasesRow++;
       purchasesWritten++;
+    }
+  }
+
+
+  // Rebuild totals and summary formulas using the detected data and totals rows.
+  const salesTotalsRow = salesSheetInfo.totalsRowNumber;
+  if (salesTotalsRow) {
+    const totals = salesWs.getRow(salesTotalsRow);
+    for (const colLetter of ['C', 'D', 'E']) totals.getCell(colLetter).value = { formula: `SUM(${colLetter}${salesSheetInfo.dataStartRowNumber}:${colLetter}${salesTotalsRow - 1})` };
+    for (const colLetter of ['F', 'G', 'H']) totals.getCell(colLetter).value = { formula: `IFERROR(LOOKUP(2,1/(${colLetter}${salesSheetInfo.dataStartRowNumber}:${colLetter}${salesTotalsRow - 1}<>""),${colLetter}${salesSheetInfo.dataStartRowNumber}:${colLetter}${salesTotalsRow - 1}),0)` };
+  }
+  const purchasesTotalsRow = purchasesSheetInfo.totalsRowNumber;
+  if (purchasesTotalsRow) {
+    const totals = purchasesWs.getRow(purchasesTotalsRow);
+    for (const colLetter of ['G', 'H', 'I']) totals.getCell(colLetter).value = { formula: `SUM(${colLetter}${purchasesSheetInfo.dataStartRowNumber}:${colLetter}${purchasesTotalsRow - 1})` };
+    totals.getCell('J').value = { formula: `IFERROR(LOOKUP(2,1/(J${purchasesSheetInfo.dataStartRowNumber}:J${purchasesTotalsRow - 1}<>""),J${purchasesSheetInfo.dataStartRowNumber}:J${purchasesTotalsRow - 1}),0)` };
+  }
+  const summary = workbook.getWorksheet('ملخص الأداء');
+  if (summary) {
+    if (salesTotalsRow) summary.getCell('B6').value = { formula: `'المبيعات'!E${salesTotalsRow}` };
+    if (purchasesTotalsRow) summary.getCell('D6').value = { formula: `'المشتريات والموردين'!I${purchasesTotalsRow}` };
+    summary.getCell('F6').value = { formula: 'B6-D6' };
+    const lastSalesRow = (salesTotalsRow || salesSheetInfo.dataStartRowNumber + 1) - 1;
+    for (const [cell, col] of [['B9', 'F'], ['D9', 'G'], ['F9', 'H']] as const) {
+      summary.getCell(cell).value = { formula: `IFERROR(LOOKUP(2,1/('المبيعات'!${col}${salesSheetInfo.dataStartRowNumber}:${col}${lastSalesRow}<>""),'المبيعات'!${col}${salesSheetInfo.dataStartRowNumber}:${col}${lastSalesRow}),0)` };
     }
   }
 
