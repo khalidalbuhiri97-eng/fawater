@@ -816,10 +816,10 @@ export class ServerBatchQueueManager {
                   total: toOptionalNum(it?.total),
                 }))
               : [],
-            customFieldsValues:
-              ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
-                ? ext.customFieldsExtracted
-                : {},
+            customFieldsValues: {
+              ...(ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object' ? ext.customFieldsExtracted : {}),
+              ...(ext.paymentMethod ? { __official_payment_method: ext.paymentMethod } : {}),
+            },
             status: mapQueueStatusToInvoiceStatus('completed'),
             processingStatus: 'completed' as TaskProcessingStatus,
             errorMessage: undefined,
