@@ -130,7 +130,7 @@ function classifyColumnFromTemplate(
       !headerName.includes('شامل الضريبة')
     ) {
       fieldKey = 'taxAmount';
-    } else if (headerName.includes('الإجمالي شامل الضريبة') || headerName.includes('الإجمالي')) {
+    } else if (headerName.includes('شامل الضريبة') || headerName.includes('الإجمالي')) {
       fieldKey = 'formula:purchasesTotal';
       isFormula = true;
       formulaHint = formulaHint || 'المبلغ قبل الضريبة + ضريبة القيمة المضافة';
