@@ -3,7 +3,6 @@ import {
   X,
   Upload,
   Sparkles,
-  Loader2,
   PenLine,
   AlertCircle,
   CheckCircle2,
@@ -413,14 +412,14 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                   setErrorMsg('');
                   setManualSuccessMsg('');
                 }}
-                className={`p-3 rounded-2xl border text-right transition flex items-center gap-3 ${
+                className={`p-2 sm:p-2.5 rounded-xl border text-right transition flex items-center gap-2 ${
                   mode === 'ai'
                     ? 'border-emerald-600 bg-white text-emerald-950 ring-2 ring-emerald-500/20 shadow-xs'
                     : 'border-slate-200 bg-slate-100/70 text-slate-600 hover:bg-white'
                 }`}
               >
                 <div
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
                     mode === 'ai' ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
                   }`}
                 >
@@ -703,7 +702,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     يمكنك تحديد النوع يدوياً مسبقاً أو تركه تلقائياً، كما يمكنك التخصيص لكل ملف
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 gap-1.5">
                   {(
                     [
                       { id: 'auto', label: 'تلقائي (AI)', sub: 'يحدد Gemini النوع' },
@@ -715,14 +714,14 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       key={opt.id}
                       type="button"
                       onClick={() => handleBatchClassificationChange(opt.id)}
-                      className={`p-2 sm:p-2.5 rounded-lg border text-right transition ${
+                      className={`p-1.5 sm:p-2 rounded-lg border text-right transition ${
                         aiDefaultClassification === opt.id
                           ? 'border-emerald-600 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-500/20'
                           : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
                       }`}
                     >
-                      <div className="font-bold text-[11px]">{opt.label}</div>
-                      <div className="text-[9px] leading-snug text-slate-500 mt-0.5">{opt.sub}</div>
+                      <div className="font-bold text-[10px] sm:text-[11px]">{opt.label}</div>
+                      <div className="text-[9px] leading-tight text-slate-500 mt-0.5">{opt.sub}</div>
                     </button>
                   ))}
                 </div>
