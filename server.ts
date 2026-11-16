@@ -132,7 +132,7 @@ async function startServer() {
 
       if (req.path === '/background/status' && !organizationId) {
         if (memberOrgIds.size === 0) return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب.' });
-        res.locals.defaultOrganizationId = memberRows[0].organization_id;
+        res.locals.allowedOrgIds = Array.from(memberOrgIds);
         return next();
       }
 
@@ -341,7 +341,7 @@ async function startServer() {
     const organizationId =
       typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
         ? req.query.organizationId.trim()
-        : (res.locals.defaultOrganizationId as string | undefined);
+        : undefined;
     const allowedOrgIds = (res.locals.allowedOrgIds as string[] | undefined) || [];
     const scopedStatuses = organizationId
       ? [batchQueue.getStatus(organizationId)]
