@@ -126,6 +126,7 @@ export interface ExtractedInvoiceData {
   invoiceDate: string;
   day: string;
   issuerName: string;
+  paymentMethod: string;
   clientName: string;
   issuerTaxId: string;
   clientTaxId: string;
@@ -231,7 +232,7 @@ export async function extractInvoiceWithGemini(
 ${typeInstruction}
 المفاتيح:
 documentType, classificationReason, invoiceNumber, invoiceDate(YYYY-MM-DD), day(عربي),
-issuerName, clientName, issuerTaxId, clientTaxId, currency,
+issuerName, paymentMethod, clientName, issuerTaxId, clientTaxId, currency,
 subtotal, taxAmount, taxRate, discount, grandTotal, cashSales, networkSales,
 notes, items[{name,code,quantity,unit,unitPrice,discount,tax,total}],
 customFieldsExtracted.
@@ -323,6 +324,7 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
       invoiceDate: parsedData.invoiceDate ? String(parsedData.invoiceDate).trim() : '',
       day: parsedData.day ? String(parsedData.day).trim() : '',
       issuerName: parsedData.issuerName ? String(parsedData.issuerName).trim() : '',
+      paymentMethod: parsedData.paymentMethod ? String(parsedData.paymentMethod).trim() : '',
       clientName: parsedData.clientName ? String(parsedData.clientName).trim() : '',
       issuerTaxId: parsedData.issuerTaxId ? String(parsedData.issuerTaxId).trim() : '',
       clientTaxId: parsedData.clientTaxId ? String(parsedData.clientTaxId).trim() : '',
