@@ -48,7 +48,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         if (event === 'PASSWORD_RECOVERY') setMode('update');
       }
     });
-    return () => { active = false; listener.subscription.unsubscribe(); };
+    return () => { active = false; listener?.subscription?.unsubscribe?.(); };
   }, []);
 
   async function submit(event: React.FormEvent) {
