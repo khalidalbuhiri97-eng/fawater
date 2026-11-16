@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 
 // Use the quota-friendly Flash-Lite model by default; allow an explicit server-side override.
-export const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash-lite';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite';
 export const MAX_IMAGE_BYTES = 15 * 1024 * 1024; // 15 MB
 export const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
