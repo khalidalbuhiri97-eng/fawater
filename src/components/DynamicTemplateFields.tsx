@@ -165,7 +165,7 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
         if (next.cashSales !== undefined || next.networkSales !== undefined) {
           next.grandTotal = Number(next.cashSales ?? 0) + Number(next.networkSales ?? 0);
         }
-      } else if (next.documentType === 'مشتريات') {
+      } else if (col.fieldKey !== 'grandTotal' && next.documentType === 'مشتريات') {
         if (next.subtotal !== undefined || next.taxAmount !== undefined) {
           next.grandTotal = Number(next.subtotal ?? 0) + Number(next.taxAmount ?? 0);
         }
