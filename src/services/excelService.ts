@@ -133,13 +133,13 @@ function ensureWritableRowBeforeTotals(
       };
     }
   } else if (ws.name === 'المشتريات والموردين') {
-    for (const colLetter of ['C', 'D', 'E']) {
+    for (const colLetter of ['F', 'G', 'H']) {
       totalsRow.getCell(colLetter).value = {
         formula: `SUM(${colLetter}${startRow}:${colLetter}${endRow})`,
       };
     }
-    totalsRow.getCell('F').value = {
-      formula: `IFERROR(LOOKUP(2,1/(F${startRow}:F${endRow}<>""),F${startRow}:F${endRow}),0)`,
+    totalsRow.getCell('I').value = {
+      formula: `IFERROR(LOOKUP(2,1/(I${startRow}:I${endRow}<>""),I${startRow}:I${endRow}),0)`,
     };
   }
 
@@ -158,7 +158,7 @@ function ensureWritableRowBeforeTotals(
         formula: `LOOKUP(2,1/('المبيعات'!H${startRow}:H${endRow}<>""),'المبيعات'!H${startRow}:H${endRow})`,
       };
     } else if (ws.name === 'المشتريات والموردين') {
-      summaryWs.getCell('D6').value = { formula: `'المشتريات والموردين'!E${newTotalsRow}` };
+      summaryWs.getCell('D6').value = { formula: `'المشتريات والموردين'!H${newTotalsRow}` };
     }
   }
 
@@ -217,6 +217,9 @@ export async function appendInvoicesToWorkbookBuffer(
 
   const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['التاريخ']);
   const purSupplierCol = findColumnByKeywords(purchasesSheetInfo.columns, ['اسم المورد', 'المورد']);
+  const purInvoiceNumberCol = findColumnByKeywords(purchasesSheetInfo.columns, ['رقم الفاتورة']);
+  const purPaymentMethodCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الدفع', 'طريقة الدفع']);
+  const purTaxIdCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرقم الضريبي']);
   const purSubtotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['المبلغ قبل الضريبة', 'قبل الضريبة']);
   const purTaxCol = findColumnByKeywords(
     purchasesSheetInfo.columns,
@@ -326,6 +329,9 @@ export async function appendInvoicesToWorkbookBuffer(
       if (purSupplierCol && inv.issuerName) {
         row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
       }
+      if (purInvoiceNumberCol && inv.invoiceNumber) row.getCell(purInvoiceNumberCol.colNumber).value = inv.invoiceNumber;
+      if (purPaymentMethodCol && inv.paymentMethod) row.getCell(purPaymentMethodCol.colNumber).value = inv.paymentMethod;
+      if (purTaxIdCol && inv.issuerTaxId) row.getCell(purTaxIdCol.colNumber).value = inv.issuerTaxId;
       if (purSubtotalCol && inv.subtotal !== undefined) {
         row.getCell(purSubtotalCol.colNumber).value = inv.subtotal;
       }
