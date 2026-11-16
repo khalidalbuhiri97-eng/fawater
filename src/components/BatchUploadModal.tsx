@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X,
   Upload,
@@ -98,6 +99,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [manualTouchStartX, setManualTouchStartX] = useState<number | null>(null);
   const [manualZoom, setManualZoom] = useState(1);
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
+  const lightboxPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchDistance = useRef<number | null>(null);
   const [savingManual, setSavingManual] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -382,8 +385,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
   const activeManualSheet = getSheetSchemaByType(templateSheets, manualType);
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4 overflow-hidden overscroll-none">
+  return createPortal((
+    <div className="fixed inset-0 z-50 h-[100dvh] w-screen bg-black/65 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4 overflow-hidden overscroll-none">
       <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full max-w-4xl h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[94dvh] flex flex-col min-h-0 overflow-hidden border border-slate-200 animate-in fade-in zoom-in duration-200">
         {/* Header */}
         <div className="bg-slate-900 text-white px-3 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-2 shrink-0">
@@ -894,21 +897,62 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         )}
       </div>
       {imageLightboxOpen && manualImage && manualImage.mimeType !== "application/pdf" && (
-        <div className="fixed inset-0 z-[80] flex flex-col bg-black/95" role="dialog" aria-modal="true" aria-label="تكبير صورة الفاتورة">
-          <div className="flex shrink-0 items-center justify-between gap-3 bg-slate-950 px-3 py-3 text-white">
+        <div
+          className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col overflow-hidden bg-black"
+          role="dialog"
+          aria-modal="true"
+          aria-label="تكبير صورة الفاتورة"
+          style={{ touchAction: 'none', overscrollBehavior: 'none' }}
+        >
+          <div className="flex min-h-14 shrink-0 items-center justify-between gap-2 bg-slate-950 px-3 py-3 text-white">
             <span className="min-w-0 truncate text-xs font-semibold">{manualImage.fileName}</span>
-            <div className="flex shrink-0 items-center gap-2">
-              <button type="button" onClick={() => setManualZoom((z) => Math.min(z + 0.25, 4))} className="rounded-lg bg-white/10 p-2" aria-label="تكبير الصورة"><ZoomIn className="h-4 w-4" /></button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button type="button" onClick={() => setManualZoom((z) => Math.min(z + 0.25, 5))} className="rounded-lg bg-white/10 p-2" aria-label="تكبير الصورة"><ZoomIn className="h-4 w-4" /></button>
               <button type="button" onClick={() => setManualZoom((z) => Math.max(z - 0.25, 1))} className="rounded-lg bg-white/10 p-2" aria-label="تصغير الصورة"><ZoomOut className="h-4 w-4" /></button>
               <button type="button" onClick={() => setManualZoom(1)} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
-              <button type="button" onClick={() => { setImageLightboxOpen(false); setManualZoom(1); }} className="rounded-lg bg-white/10 p-2" aria-label="إغلاق التكبير"><X className="h-5 w-5" /></button>
+              <button type="button" onClick={() => { setImageLightboxOpen(false); setManualZoom(1); lightboxPointers.current.clear(); pinchDistance.current = null; }} className="rounded-lg bg-white/10 p-2" aria-label="إغلاق التكبير"><X className="h-5 w-5" /></button>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto overscroll-contain p-3 flex items-center justify-center">
-            <img src={`data:${manualImage.mimeType};base64,${manualImage.base64}`} alt="صورة الفاتورة مكبرة" style={{ transform: `scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.15s ease" }} className="max-h-[85dvh] max-w-[96vw] object-contain" />
+          <div
+            className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black p-2"
+            style={{ touchAction: 'none', overscrollBehavior: 'none' }}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              lightboxPointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+              if (lightboxPointers.current.size === 2) {
+                const pts = Array.from(lightboxPointers.current.values());
+                pinchDistance.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+              }
+            }}
+            onPointerMove={(event) => {
+              if (!lightboxPointers.current.has(event.pointerId)) return;
+              lightboxPointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+              if (lightboxPointers.current.size === 2 && pinchDistance.current) {
+                const pts = Array.from(lightboxPointers.current.values());
+                const nextDistance = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+                const ratio = nextDistance / pinchDistance.current;
+                setManualZoom((z) => Math.max(1, Math.min(5, z * ratio)));
+                pinchDistance.current = nextDistance;
+              }
+            }}
+            onPointerUp={(event) => {
+              lightboxPointers.current.delete(event.pointerId);
+              pinchDistance.current = null;
+            }}
+            onPointerCancel={(event) => {
+              lightboxPointers.current.delete(event.pointerId);
+              pinchDistance.current = null;
+            }}
+          >
+            <img
+              draggable={false}
+              src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
+              alt="صورة الفاتورة مكبرة"
+              style={{ transform: `scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
+            />
           </div>
         </div>
       )}
     </div>
-  );
+    ), document.body);
 };
