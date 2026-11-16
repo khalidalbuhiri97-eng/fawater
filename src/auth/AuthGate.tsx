@@ -4,7 +4,7 @@ import { getSupabaseBrowserClient } from './supabaseClient';
 import { setLocalStoreUserScope } from '../services/localStore';
 import { LockKeyhole, Mail, KeyRound, Loader2, LogIn, UserPlus, RotateCcw } from 'lucide-react';
 
-type Mode = 'login' | 'signup' | 'reset';
+type Mode = 'login' | 'signup' | 'reset' | 'update';
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -30,8 +30,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(({ data }) => {
       if (active) { setLocalStoreUserScope(data.session?.user.id || null); setSession(data.session); setReady(true); }
     }).catch(() => { if (active) setReady(true); });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (active) { setLocalStoreUserScope(nextSession?.user.id || null); setSession(nextSession); }
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (active) {
+        setLocalStoreUserScope(nextSession?.user.id || null);
+        setSession(nextSession);
+        if (event === 'PASSWORD_RECOVERY') setMode('update');
+      }
     });
     return () => { active = false; listener.subscription.unsubscribe(); };
   }, []);
@@ -52,6 +56,14 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         });
         if (authError) throw authError;
         if (!data.session) setMessage('تم إنشاء الحساب. تحقق من بريدك الإلكتروني لتأكيده ثم سجّل الدخول.');
+      } else if (mode === 'update') {
+        if (password.length < 10) throw new Error('استخدم كلمة مرور من 10 أحرف على الأقل.');
+        const { error: authError } = await supabase.auth.updateUser({ password });
+        if (authError) throw authError;
+        await supabase.auth.signOut();
+        setMode('login');
+        setPassword('');
+        setMessage('تم تحديث كلمة المرور. يمكنك تسجيل الدخول الآن.');
       } else {
         const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
           redirectTo: window.location.origin,
@@ -71,7 +83,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
 
   if (!ready) return <div dir="rtl" className="min-h-screen grid place-items-center bg-slate-100"><Loader2 className="animate-spin text-emerald-600" /></div>;
-  if (session) {
+  if (session && mode !== 'update') {
     return <>{children}<button onClick={logout} disabled={busy} className="fixed bottom-4 left-4 z-[100] rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-lg hover:bg-slate-50 disabled:opacity-50">{busy ? 'جارٍ الخروج...' : 'تسجيل الخروج'}</button></>;
   }
 
@@ -80,17 +92,17 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white p-7 sm:p-9 shadow-2xl">
         <div className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-emerald-100 text-emerald-700"><LockKeyhole size={27}/></div>
         <h1 className="text-center text-2xl font-black text-slate-900">فواتير | Fawater</h1>
-        <p className="mt-2 text-center text-sm text-slate-500">{mode === 'login' ? 'سجّل الدخول إلى مساحة عملك' : mode === 'signup' ? 'أنشئ حسابك للبدء' : 'استعادة الوصول إلى حسابك'}</p>
+        <p className="mt-2 text-center text-sm text-slate-500">{mode === 'login' ? 'سجّل الدخول إلى مساحة عملك' : mode === 'signup' ? 'أنشئ حسابك للبدء' : mode === 'update' ? 'اختر كلمة مرور جديدة لحسابك' : 'استعادة الوصول إلى حسابك'}</p>
         <form onSubmit={submit} className="mt-7 space-y-4">
           {mode === 'signup' && <label className="block text-sm font-semibold text-slate-700">الاسم الكامل<input required value={fullName} onChange={e=>setFullName(e.target.value)} autoComplete="name" className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500"/></label>}
           <label className="block text-sm font-semibold text-slate-700"><span className="flex items-center gap-2"><Mail size={16}/> البريد الإلكتروني</span><input required type="email" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="name@example.com"/></label>
-          {mode !== 'reset' && <label className="block text-sm font-semibold text-slate-700"><span className="flex items-center gap-2"><KeyRound size={16}/> كلمة المرور</span><input required type="password" value={password} onChange={e=>setPassword(e.target.value)} minLength={mode==='signup'?10:1} autoComplete={mode==='login'?'current-password':'new-password'} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder={mode==='signup'?'10 أحرف على الأقل':'••••••••••'}/></label>}
+          {mode !== 'reset' && <label className="block text-sm font-semibold text-slate-700"><span className="flex items-center gap-2"><KeyRound size={16}/> كلمة المرور</span><input required type="password" value={password} onChange={e=>setPassword(e.target.value)} minLength={mode==='signup'||mode==='update'?10:1} autoComplete={mode==='login'?'current-password':'new-password'} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder={mode==='signup'||mode==='update'?'10 أحرف على الأقل':'••••••••••'}/></label>}
           {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
           {message && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}
-          <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3.5 font-bold text-white hover:bg-emerald-500 disabled:opacity-60">{busy?<Loader2 className="animate-spin" size={18}/>:mode==='login'?<LogIn size={18}/>:mode==='signup'?<UserPlus size={18}/>:<RotateCcw size={18}/>} {mode==='login'?'تسجيل الدخول':mode==='signup'?'إنشاء الحساب':'إرسال رابط الاستعادة'}</button>
+          <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3.5 font-bold text-white hover:bg-emerald-500 disabled:opacity-60">{busy?<Loader2 className="animate-spin" size={18}/>:mode==='login'?<LogIn size={18}/>:mode==='signup'?<UserPlus size={18}/>:<RotateCcw size={18}/>} {mode==='login'?'تسجيل الدخول':mode==='signup'?'إنشاء الحساب':mode==='update'?'حفظ كلمة المرور':'إرسال رابط الاستعادة'}</button>
         </form>
         <div className="mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm">
-          {mode!=='login' && <button onClick={()=>{setMode('login');setError('');setMessage('');}} className="font-semibold text-emerald-700">العودة لتسجيل الدخول</button>}
+          {mode!=='login' && mode!=='update' && <button onClick={()=>{setMode('login');setError('');setMessage('');}} className="font-semibold text-emerald-700">العودة لتسجيل الدخول</button>}
           {mode==='login' && <><button onClick={()=>{setMode('signup');setError('');setMessage('');}} className="font-semibold text-emerald-700">إنشاء حساب جديد</button><button onClick={()=>{setMode('reset');setError('');setMessage('');}} className="text-slate-500 hover:text-slate-800">نسيت كلمة المرور؟</button></>}
         </div>
         <p className="mt-7 text-center text-xs leading-6 text-slate-400">تسجيل الدخول لا يمنح صلاحية الوصول إلى مؤسسة تلقائيًا؛ يجب أن تكون عضوًا معتمدًا فيها.</p>
