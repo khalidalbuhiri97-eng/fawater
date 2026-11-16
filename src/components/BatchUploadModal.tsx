@@ -97,6 +97,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [manualCompletedIndexes, setManualCompletedIndexes] = useState<number[]>([]);
   const [manualTouchStartX, setManualTouchStartX] = useState<number | null>(null);
   const [manualZoom, setManualZoom] = useState(1);
+  const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const [savingManual, setSavingManual] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -382,17 +383,17 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const activeManualSheet = getSheetSchemaByType(templateSheets, manualType);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
-      <div className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full max-h-[94vh] flex flex-col overflow-hidden border border-slate-200 animate-in fade-in zoom-in duration-200 my-auto">
+    <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4 overflow-hidden overscroll-none">
+      <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full max-w-4xl h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[94dvh] flex flex-col min-h-0 overflow-hidden border border-slate-200 animate-in fade-in zoom-in duration-200">
         {/* Header */}
-        <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
+        <div className="bg-slate-900 text-white px-3 py-3 sm:px-6 sm:py-4 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2.5">
             {mode === 'ai' ? (
               <Sparkles className="w-5 h-5 text-emerald-400" />
             ) : (
               <PenLine className="w-5 h-5 text-emerald-400" />
             )}
-            <h3 className="font-bold text-base sm:text-lg">
+            <h3 className="min-w-0 font-bold text-xs sm:text-lg leading-snug">
               {mode === 'ai' ? 'استخراج الفواتير بالذكاء الاصطناعي' : 'الإدخال اليدوي المباشر وفق قالب Excel'}
             </h3>
           </div>
@@ -464,7 +465,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         )}
 
         {/* Body */}
-        <div className="px-3 py-3 sm:p-6 flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+        <div className="px-2 py-2 sm:p-6 flex min-h-0 flex-1 flex-col gap-2 sm:gap-3 overflow-hidden">
           {templateError && (
             <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -503,7 +504,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       <>
                         <button
                           type="button"
-                          onClick={() => setManualZoom((z) => Math.min(z + 0.25, 3))}
+                          onClick={() => { setManualZoom(1); setImageLightboxOpen(true); }}
                           className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
                           title="تكبير"
                         >
@@ -578,6 +579,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       />
                     ) : (
                       <img
+                        onClick={() => { setManualZoom(1); setImageLightboxOpen(true); }}
                         src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
                         alt="معاينة الفاتورة"
                         style={{ transform: `scale(${manualZoom})`, transition: 'transform 0.2s ease' }}
@@ -738,15 +740,15 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             </div>
           ) : (
             /* ==================== AI UPLOAD ==================== */
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain space-y-5 pb-2">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain space-y-3 sm:space-y-5 pb-2">
 
               {/* Manual / Auto Classification Selector for AI */}
-              <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2">
+              <div className="p-2 sm:p-3 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-xs font-bold text-slate-800">
                     تصنيف الفواتير للذكاء الاصطناعي:
                   </label>
-                  <span className="text-[11px] text-slate-500">
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 leading-snug">
                     يمكنك تحديد النوع يدوياً مسبقاً أو تركه تلقائياً، كما يمكنك التخصيص لكل ملف
                   </span>
                 </div>
@@ -775,7 +777,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 </div>
               </div>
 
-              <div className="border-2 border-dashed border-slate-300 rounded-2xl p-8 text-center bg-slate-50 hover:bg-slate-100/50 transition cursor-pointer">
+              <div className="border-2 border-dashed border-slate-300 rounded-2xl p-4 sm:p-8 text-center bg-slate-50 hover:bg-slate-100/50 transition cursor-pointer">
                 <input
                   type="file"
                   multiple
@@ -785,7 +787,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                   id="batchFilesInput"
                 />
                 <label htmlFor="batchFilesInput" className="cursor-pointer flex flex-col items-center gap-3">
-                  <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center">
                     <Upload className="w-6 h-6" />
                   </div>
                   <div>
@@ -858,11 +860,11 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
         {/* Footer Actions */}
         {!extracting && (
-          <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-end gap-3 shrink-0">
+          <div className="px-3 py-3 sm:px-6 sm:py-4 bg-slate-50 border-t border-slate-200 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={onClose}
-              className="px-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium hover:bg-white"
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium hover:bg-white"
             >
               إغلاق
             </button>
@@ -872,7 +874,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 type="button"
                 disabled={savingManual || manualCompletedIndexes.includes(activeManualImageIndex)}
                 onClick={handleSaveManualInvoice}
-                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
+                className="w-full sm:w-auto justify-center px-4 sm:px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
               >
                 <Save className="w-4 h-4" />
                 <span>{savingManual ? 'جاري الحفظ...' : 'حفظ الفاتورة وتجهيزها لـ Excel'}</span>
@@ -882,7 +884,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 type="button"
                 disabled={selectedFiles.length === 0}
                 onClick={handleStartAiExtraction}
-                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
+                className="w-full sm:w-auto justify-center px-4 sm:px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
               >
                 <Sparkles className="w-4 h-4" />
                 <span>بدء المعالجة في الخلفية ({selectedFiles.length})</span>
@@ -891,6 +893,22 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           </div>
         )}
       </div>
+      {imageLightboxOpen && manualImage && manualImage.mimeType !== "application/pdf" && (
+        <div className="fixed inset-0 z-[80] flex flex-col bg-black/95" role="dialog" aria-modal="true" aria-label="تكبير صورة الفاتورة">
+          <div className="flex shrink-0 items-center justify-between gap-3 bg-slate-950 px-3 py-3 text-white">
+            <span className="min-w-0 truncate text-xs font-semibold">{manualImage.fileName}</span>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" onClick={() => setManualZoom((z) => Math.min(z + 0.25, 4))} className="rounded-lg bg-white/10 p-2" aria-label="تكبير الصورة"><ZoomIn className="h-4 w-4" /></button>
+              <button type="button" onClick={() => setManualZoom((z) => Math.max(z - 0.25, 1))} className="rounded-lg bg-white/10 p-2" aria-label="تصغير الصورة"><ZoomOut className="h-4 w-4" /></button>
+              <button type="button" onClick={() => setManualZoom(1)} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
+              <button type="button" onClick={() => { setImageLightboxOpen(false); setManualZoom(1); }} className="rounded-lg bg-white/10 p-2" aria-label="إغلاق التكبير"><X className="h-5 w-5" /></button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto overscroll-contain p-3 flex items-center justify-center">
+            <img src={`data:${manualImage.mimeType};base64,${manualImage.base64}`} alt="صورة الفاتورة مكبرة" style={{ transform: `scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.15s ease" }} className="max-h-[85dvh] max-w-[96vw] object-contain" />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
