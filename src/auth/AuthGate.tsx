@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabaseBrowserClient } from './supabaseClient';
 import { setLocalStoreUserScope } from '../services/localStore';
+import { AuthProvider } from './AuthContext';
 import { LockKeyhole, Mail, KeyRound, Loader2, LogIn, UserPlus, RotateCcw } from 'lucide-react';
 
 type Mode = 'login' | 'signup' | 'reset' | 'update';
@@ -87,9 +88,19 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     } finally { setBusy(false); }
   }
 
+  async function logout() {
+    setBusy(true);
+    try { await getSupabaseBrowserClient().auth.signOut(); }
+    finally { setBusy(false); }
+  }
+
   if (!ready) return <div dir="rtl" className="min-h-screen grid place-items-center bg-slate-100"><Loader2 className="animate-spin text-emerald-600" /></div>;
   if (session && mode !== 'update') {
-    return <>{children}</>;
+    return (
+      <AuthProvider value={{ session, user: session?.user ?? null, logout, busy }}>
+        {children}
+      </AuthProvider>
+    );
   }
 
   return (
