@@ -12,6 +12,8 @@ import {
   Save,
   Image as ImageIcon,
   Trash2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { InvoiceRecord, Operation } from '../types';
 import { saveInvoiceImage } from '../services/dbService';
@@ -89,6 +91,11 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [manualType, setManualType] = useState<'مبيعات' | 'مشتريات'>('مبيعات');
   const [manualInvoice, setManualInvoice] = useState<InvoiceRecord>(() => createEmptyManualInvoice('مبيعات'));
   const [manualImage, setManualImage] = useState<{ fileName: string; base64: string; mimeType: string } | null>(null);
+  const [manualFiles, setManualFiles] = useState<File[]>([]);
+  const [activeManualImageIndex, setActiveManualImageIndex] = useState(0);
+  const [manualDrafts, setManualDrafts] = useState<Record<number, InvoiceRecord>>({});
+  const [manualCompletedIndexes, setManualCompletedIndexes] = useState<number[]>([]);
+  const [manualTouchStartX, setManualTouchStartX] = useState<number | null>(null);
   const [manualZoom, setManualZoom] = useState(1);
   const [savingManual, setSavingManual] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
@@ -126,23 +133,34 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   };
 
   // --- Manual Mode Handlers (NEVER calls Gemini) ---
-  const handleManualImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setErrorMsg('');
-    try {
-      const base64 = await fileToBase64(file);
-      setManualImage({
-        fileName: file.name,
-        base64,
-        mimeType: file.type || 'image/jpeg',
-      });
-      setManualZoom(1);
-    } catch {
-      setErrorMsg('تعذر قراءة ملف الصورة المختار.');
-    }
+  const loadManualImage = async (file: File) => {
+    const base64 = await fileToBase64(file);
+    setManualImage({ fileName: file.name, base64, mimeType: file.type || 'image/jpeg' });
+    setManualZoom(1);
   };
 
+  const handleManualImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter((file) => file.type.startsWith('image/') || file.type === 'application/pdf');
+    if (!files.length) return;
+    setErrorMsg('');
+    setManualFiles((prev) => [...prev, ...files]);
+    try { if (manualFiles.length === 0) { setActiveManualImageIndex(0); await loadManualImage(files[0]); } }
+    catch { setErrorMsg('تعذر قراءة أحد ملفات الصور المختارة.'); }
+    e.target.value = '';
+  };
+
+  const navigateManualImage = async (direction: -1 | 1) => {
+    const available = manualFiles.map((_, index) => index).filter((index) => !manualCompletedIndexes.includes(index));
+    const position = available.indexOf(activeManualImageIndex);
+    const nextIndex = available[position + direction];
+    if (nextIndex === undefined) return;
+    setManualDrafts((prev) => ({ ...prev, [activeManualImageIndex]: manualInvoice }));
+    setManualInvoice(manualDrafts[nextIndex] || createEmptyManualInvoice(manualType));
+    setActiveManualImageIndex(nextIndex);
+    setErrorMsg('');
+    try { await loadManualImage(manualFiles[nextIndex]); }
+    catch { setErrorMsg('تعذر تحميل الصورة التالية.'); }
+  };
   const handleManualTypeSwitch = (nextType: 'مبيعات' | 'مشتريات') => {
     setManualType(nextType);
     setManualInvoice((prev) => ({
@@ -229,10 +247,24 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           'تم حفظ الفاتورة بحالة «تحتاج مراجعة» لعدم إدخال التاريخ — لن يتم تصديرها إلى Excel حتى إدخال التاريخ واعتمادها.'
         );
       }
-      // Reset for next manual entry cleanly
-      setManualInvoice(createEmptyManualInvoice(manualType));
-      setManualImage(null);
-      setManualZoom(1);
+      if (manualFiles.length > 0) {
+        setManualCompletedIndexes((prev) => [...prev, activeManualImageIndex]);
+        const nextIndex = manualFiles.findIndex((_, index) => index !== activeManualImageIndex && !manualCompletedIndexes.includes(index));
+        if (nextIndex >= 0) {
+          setManualDrafts((prev) => ({ ...prev, [activeManualImageIndex]: manualInvoice }));
+          setActiveManualImageIndex(nextIndex);
+          setManualInvoice(manualDrafts[nextIndex] || createEmptyManualInvoice(manualType));
+          await loadManualImage(manualFiles[nextIndex]);
+          setManualSuccessMsg(`تم حفظ الفاتورة. انتقلت إلى الصورة ${nextIndex + 1} من ${manualFiles.length}.`);
+        } else {
+          setManualInvoice(createEmptyManualInvoice(manualType));
+          setManualSuccessMsg('اكتمل الإدخال اليدوي وحفظ جميع الصور المختارة.');
+        }
+      } else {
+        setManualInvoice(createEmptyManualInvoice(manualType));
+        setManualImage(null);
+        setManualZoom(1);
+      }
     } catch (err: any) {
       setErrorMsg(err?.message || 'حدث خطأ أثناء حفظ الفاتورة.');
     } finally {
@@ -478,6 +510,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     <input
                       type="file"
                       accept="image/jpeg, image/png, image/webp, application/pdf"
+                      multiple
                       onChange={handleManualImageSelect}
                       className="hidden"
                       id="manualImageUpload"
@@ -486,13 +519,29 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       htmlFor="manualImageUpload"
                       className="cursor-pointer px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition"
                     >
-                      {manualImage ? 'تغيير الصورة' : 'إرفاق صورة فاتورة'}
+                      إضافة صور الفواتير
                     </label>
                   </div>
                 </div>
 
                 {manualImage ? (
-                  <div className="p-3 flex items-center justify-center min-h-[240px] max-h-[360px] overflow-auto">
+                  <div
+                    className="relative p-3 flex items-center justify-center min-h-[240px] max-h-[360px] overflow-auto"
+                    onTouchStart={(event) => setManualTouchStartX(event.touches[0]?.clientX ?? null)}
+                    onTouchEnd={(event) => {
+                      if (manualTouchStartX === null) return;
+                      const delta = (event.changedTouches[0]?.clientX ?? manualTouchStartX) - manualTouchStartX;
+                      if (Math.abs(delta) > 55) navigateManualImage(delta < 0 ? 1 : -1);
+                      setManualTouchStartX(null);
+                    }}
+                  >
+                    {manualFiles.length > 1 && (
+                      <>
+                        <button type="button" onClick={() => navigateManualImage(-1)} className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white" aria-label="الصورة السابقة"><ChevronRight className="h-4 w-4" /></button>
+                        <button type="button" onClick={() => navigateManualImage(1)} className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white" aria-label="الصورة التالية"><ChevronLeft className="h-4 w-4" /></button>
+                        <span className="absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[10px] text-white">{activeManualImageIndex + 1} / {manualFiles.length}</span>
+                      </>
+                    )}
                     {manualImage.mimeType === 'application/pdf' ? (
                       <embed
                         src={`data:application/pdf;base64,${manualImage.base64}`}
@@ -791,7 +840,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             {mode === 'manual' ? (
               <button
                 type="button"
-                disabled={savingManual}
+                disabled={savingManual || manualCompletedIndexes.includes(activeManualImageIndex)}
                 onClick={handleSaveManualInvoice}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white rounded-xl text-sm font-bold shadow-md flex items-center gap-2"
               >
