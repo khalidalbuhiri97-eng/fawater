@@ -118,6 +118,46 @@ async function startServer() {
         organizationId = data?.organization_id || '';
       }
 
+      if (req.path === '/supabase/templates') {
+        if (!memberRows.some((m: any) => ['owner','admin'].includes(m.role))) {
+          return res.status(403).json({ success: false, error: 'تحديث القالب متاح لمالك أو مدير مؤسسة فقط.' });
+        }
+        return next();
+      }
+
+      if (req.path === '/background/status' && !organizationId) {
+        if (memberOrgIds.size === 0) return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب.' });
+        res.locals.defaultOrganizationId = memberRows[0].organization_id;
+        return next();
+      }
+
+      if (req.path.startsWith('/background/ai-batches/') && req.path.endsWith('/retry')) {
+        const batchId = req.params.batchId;
+        const owned = Array.from(memberOrgIds).some((orgId: any) =>
+          batchQueue.getStatus(orgId).aiBatches.some((b: any) => b.batchId === batchId)
+        );
+        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على الدفعة.' });
+        return next();
+      }
+      if (req.path.startsWith('/background/exports/') && req.path.endsWith('/download')) {
+        const jobId = req.params.jobId;
+        const owned = Array.from(memberOrgIds).some((orgId: any) =>
+          batchQueue.getStatus(orgId).exportJobs.some((j: any) => j.jobId === jobId || j.batchId === jobId)
+        );
+        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على مهمة التصدير.' });
+        return next();
+      }
+      if (req.path.startsWith('/background/jobs/') && req.path.endsWith('/dismiss')) {
+        const jobId = req.params.id;
+        const owned = Array.from(memberOrgIds).some((orgId: any) => {
+          const status = batchQueue.getStatus(orgId);
+          return status.aiBatches.some((b: any) => b.batchId === jobId) ||
+            status.exportJobs.some((j: any) => j.jobId === jobId || j.batchId === jobId);
+        });
+        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على المهمة.' });
+        return next();
+      }
+
       if (req.path === '/supabase/bootstrap') {
         if (memberOrgIds.size === 0) {
           return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب. أنشئ مؤسسة أو اطلب دعوة.' });
@@ -131,6 +171,10 @@ async function startServer() {
       if (req.path === '/supabase/organizations' && req.method === 'POST') {
         const { data: existing } = await admin.from('organizations').select('id').eq('id', organizationId).maybeSingle();
         if (!existing) return next();
+        const currentRole = roles.get(organizationId);
+        if (!['owner','admin'].includes(currentRole as string)) {
+          return res.status(403).json({ success: false, error: 'تعديل إعدادات المؤسسة متاح للمالك أو المدير.' });
+        }
       }
 
       if (!organizationId || !memberOrgIds.has(organizationId)) {
@@ -151,10 +195,6 @@ async function startServer() {
       if (req.path.startsWith('/supabase/exports') && !['owner','admin','accountant'].includes(role as string)) {
         return res.status(403).json({ success: false, error: 'تصدير البيانات متاح للمالك والمدير والمحاسب.' });
       }
-      if (req.path === '/supabase/templates' && !isOwnerAdmin) {
-        return res.status(403).json({ success: false, error: 'تحديث القالب متاح لمالك أو مدير المؤسسة.' });
-      }
-
       res.locals.organizationRole = role;
       return next();
     } catch (error: any) {
@@ -289,7 +329,7 @@ async function startServer() {
     const organizationId =
       typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
         ? req.query.organizationId.trim()
-        : undefined;
+        : (res.locals.defaultOrganizationId as string | undefined);
     res.json({
       success: true,
       ...batchQueue.getStatus(organizationId),
