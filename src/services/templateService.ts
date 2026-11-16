@@ -106,7 +106,7 @@ function classifyColumnFromTemplate(
     // these field types from Excel number formats or formulas in sample rows.
     const normalizedHeader = headerName
       .replace(/[\u064B-\u065F\u0670ـ]/g, '')
-      .replace(/[\\s\\u00A0]+/g, ' ')
+      .replace(/[\s\u00A0]+/g, ' ')
       .trim();
     const purchaseFields: Record<string, { fieldKey: string; kind: TemplateColumnKind }> = {
       '#': { fieldKey: 'operationNumber', kind: 'text' },
