@@ -350,7 +350,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           <button
             disabled={currentIndex >= invoices.length - 1}
             onClick={() => onSelectInvoice(invoices[currentIndex + 1].id)}
-            className="flex items-center gap-1 px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 disabled:opacity-40 hover:bg-slate-50 transition"
+            className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
           >
             <span>التالي</span>
             <ChevronLeft className="w-4 h-4" />
@@ -377,7 +377,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
 
       {/* Warnings for missing critical fields */}
       {(needsType || missingDate || missingCashNetworkSplit || currentInvoice.errorMessage) && (
-        <div className="space-y-2">
+        <div className="mx-1 my-1 max-h-20 shrink-0 space-y-1 overflow-y-auto">
           {currentInvoice.errorMessage && (
             <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-medium flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
@@ -414,7 +414,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       )}
 
       {/* Split Screen Layout: Fixed/Sticky Image Viewer (Left) + Independent Scrollable Form Fields (Right) */}
-      <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,40dvh)_minmax(0,1fr)] gap-2 overflow-hidden p-1 lg:grid-cols-12 lg:grid-rows-1 lg:gap-3">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,46dvh)_minmax(0,1fr)] gap-2 overflow-hidden p-1 lg:grid-cols-12 lg:grid-rows-1 lg:gap-3">
         {/* Left Column (Sticky Image Viewer - remains fixed and visible while scrolling form fields on desktop; top fixed container on mobile) */}
         <div className="flex min-h-0 flex-col gap-2 overflow-hidden lg:col-span-7">
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
