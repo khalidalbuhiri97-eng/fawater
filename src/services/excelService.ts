@@ -215,8 +215,10 @@ export async function appendInvoicesToWorkbookBuffer(
   const salesBoxBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الصندوق']);
   const salesNetBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الشبكة']);
 
-  const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['التاريخ']);
+  const purOperationCol = findColumnByKeywords(purchasesSheetInfo.columns, ['#', 'رقم العملية']);
   const purSupplierCol = findColumnByKeywords(purchasesSheetInfo.columns, ['اسم المورد', 'المورد']);
+  const purPaymentCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الدفع', 'طريقة الدفع']);
+  const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['تأريخ الفاتورة', 'تاريخ الفاتورة', 'التاريخ']);
   const purInvoiceNumberCol = findColumnByKeywords(purchasesSheetInfo.columns, ['رقم الفاتورة']);
   const purTaxIdCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرقم الضريبي']);
   const purSubtotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['المبلغ قبل الضريبة', 'قبل الضريبة']);
@@ -225,7 +227,7 @@ export async function appendInvoicesToWorkbookBuffer(
     ['ضريبة القيمة المضافة', 'الضريبة'],
     ['قبل الضريبة', 'شامل الضريبة']
   );
-  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['شامل الضريبة', 'الإجمالي']);
+  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['المبلغ شامل الضريبة', 'شامل الضريبة']);
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
 
   const seenIds = new Set<string>(alreadyExportedIds);
@@ -322,11 +324,14 @@ export async function appendInvoicesToWorkbookBuffer(
       ensureWritableRowBeforeTotals(purchasesWs, nextPurchasesRow, purchasesSheetInfo, workbook);
       const row = purchasesWs.getRow(nextPurchasesRow);
 
+      if (purOperationCol) row.getCell(purOperationCol.colNumber).value = nextPurchasesRow - purchasesSheetInfo.dataStartRowNumber + 1;
+      if (purSupplierCol && inv.issuerName) row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
+      if (purPaymentCol) {
+        const paymentMethod = inv.customFieldsValues?.__official_payment_method;
+        if (paymentMethod !== undefined && paymentMethod !== '') row.getCell(purPaymentCol.colNumber).value = paymentMethod;
+      }
       if (purDateCol) {
         row.getCell(purDateCol.colNumber).value = parseExcelDateValue(inv.invoiceDate);
-      }
-      if (purSupplierCol && inv.issuerName) {
-        row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
       }
       if (purInvoiceNumberCol && inv.invoiceNumber) row.getCell(purInvoiceNumberCol.colNumber).value = inv.invoiceNumber;
       if (purTaxIdCol && inv.issuerTaxId) row.getCell(purTaxIdCol.colNumber).value = inv.issuerTaxId;
@@ -337,17 +342,10 @@ export async function appendInvoicesToWorkbookBuffer(
         row.getCell(purTaxCol.colNumber).value = inv.taxAmount;
       }
       if (purTotalCol) {
-        if (inv.subtotal !== undefined || inv.taxAmount !== undefined) {
-          const cCol = purSubtotalCol?.colLetter || 'C';
-          const dCol = purTaxCol?.colLetter || 'D';
-          const calcResult = Number(inv.subtotal ?? 0) + Number(inv.taxAmount ?? 0);
-          row.getCell(purTotalCol.colNumber).value = {
-            formula: `${cCol}${nextPurchasesRow}+${dCol}${nextPurchasesRow}`,
-            result: calcResult,
-          };
-        } else if (inv.grandTotal !== undefined) {
-          row.getCell(purTotalCol.colNumber).value = inv.grandTotal;
-        }
+        const grossTotal = inv.grandTotal ?? (inv.subtotal !== undefined || inv.taxAmount !== undefined
+          ? Number(inv.subtotal ?? 0) + Number(inv.taxAmount ?? 0)
+          : undefined);
+        if (grossTotal !== undefined) row.getCell(purTotalCol.colNumber).value = grossTotal;
       }
       if (purBalCol && inv.balance !== undefined) {
         row.getCell(purBalCol.colNumber).value = inv.balance;
