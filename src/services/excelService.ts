@@ -226,7 +226,7 @@ export async function appendInvoicesToWorkbookBuffer(
     ['ضريبة القيمة المضافة', 'الضريبة'],
     ['قبل الضريبة', 'شامل الضريبة']
   );
-  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الإجمالي شامل الضريبة', 'الإجمالي']);
+  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['شامل الضريبة', 'الإجمالي']);
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
 
   const seenIds = new Set<string>(alreadyExportedIds);
