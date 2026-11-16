@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabaseBrowserClient } from './supabaseClient';
+import { setLocalStoreUserScope } from '../services/localStore';
 import { LockKeyhole, Mail, KeyRound, Loader2, LogIn, UserPlus, RotateCcw } from 'lucide-react';
 
 type Mode = 'login' | 'signup' | 'reset';
@@ -27,10 +28,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
     supabase.auth.getSession().then(({ data }) => {
-      if (active) { setSession(data.session); setReady(true); }
+      if (active) { setLocalStoreUserScope(data.session?.user.id || null); setSession(data.session); setReady(true); }
     }).catch(() => { if (active) setReady(true); });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (active) setSession(nextSession);
+      if (active) { setLocalStoreUserScope(nextSession?.user.id || null); setSession(nextSession); }
     });
     return () => { active = false; listener.subscription.unsubscribe(); };
   }, []);
