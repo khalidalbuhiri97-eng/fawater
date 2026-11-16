@@ -96,7 +96,7 @@ function classifyColumnKey(sheetName: string, colLetter: string, headerName: str
     ) {
       return 'taxAmount';
     }
-    if (headerName.includes('الإجمالي شامل الضريبة') || headerName.includes('الإجمالي')) {
+    if (headerName.includes('شامل الضريبة') || headerName.includes('الإجمالي')) {
       return 'formula:purchasesTotal';
     }
     if (headerName.includes('الرصيد')) return 'balance';
@@ -363,7 +363,7 @@ export async function generateOfficialExcelOnServer(params: {
     ['ضريبة القيمة المضافة', 'الضريبة'],
     ['قبل الضريبة', 'شامل الضريبة']
   );
-  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الإجمالي شامل الضريبة', 'الإجمالي']);
+  const purTotalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['شامل الضريبة', 'الإجمالي']);
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
 
   const seenIds = new Set<string>(params.alreadyExportedIds || []);

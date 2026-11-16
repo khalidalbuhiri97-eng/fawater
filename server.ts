@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { createClient } from '@supabase/supabase-js';
 import { getSupabaseAdmin, testSupabaseConnection } from './server/supabaseAdmin.js';
 import {
   extractInvoiceWithGemini,
@@ -50,6 +51,177 @@ async function startServer() {
       geminiConfigured,
       supabase: supabaseStatus,
     });
+  });
+
+  // =========================================================================
+  // Authentication and tenant authorization for every API route below.
+  // The browser sends a Supabase access token; service-role access is only
+  // used after the user and their organization membership are verified.
+  // =========================================================================
+  app.use('/api', async (req, res, next) => {
+    const authorization = req.headers.authorization || '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+    const url = process.env.SUPABASE_URL;
+    if (!token || !publicKey || !url) {
+      return res.status(401).json({ success: false, error: 'يلزم تسجيل الدخول للمتابعة.' });
+    }
+
+    try {
+      const authClient = createClient(url, publicKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data: authData, error: authError } = await authClient.auth.getUser(token);
+      if (authError || !authData.user) {
+        return res.status(401).json({ success: false, error: 'جلسة الدخول غير صالحة أو انتهت. سجّل الدخول مجدداً.' });
+      }
+      (req as any).authUser = authData.user;
+
+      // Publicly-created accounts can access the app shell but not tenant data.
+      if (req.path === '/health' || req.path === '/supabase/status' || req.path === '/extract-invoice') {
+        return next();
+      }
+
+      const admin = requireSupabaseOr503(res);
+      if (!admin) return;
+      const { data: memberships, error: memberError } = await admin
+        .from('organization_members')
+        .select('organization_id,role')
+        .eq('user_id', authData.user.id)
+        .eq('status', 'active');
+      if (memberError) throw memberError;
+
+      const memberRows = memberships || [];
+      const memberOrgIds = new Set(memberRows.map((m: any) => m.organization_id));
+      const roles = new Map(memberRows.map((m: any) => [m.organization_id, m.role]));
+      let organizationId =
+        req.body?.organization?.id ||
+        req.body?.organizationId ||
+        (req.path === '/supabase/organizations' ? req.body?.id : '') ||
+        (typeof req.query.organizationId === 'string' ? req.query.organizationId : '') ||
+        '';
+
+      if (!organizationId && req.path.startsWith('/supabase/organizations/')) {
+        organizationId = req.path.split('/')[3] || '';
+      }
+
+      // Resolve tenant IDs from resource IDs when the client only supplies a record ID.
+      if (!organizationId && req.path.startsWith('/supabase/invoices/')) {
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/attachments/')) {
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/custom-fields/')) {
+        const { data } = await admin.from('custom_fields').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+      if (!organizationId && req.path.startsWith('/supabase/exports/')) {
+        const { data } = await admin.from('export_batches').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
+        organizationId = data?.organization_id || '';
+      }
+
+      if (req.path === '/supabase/templates') {
+        if (!memberRows.some((m: any) => ['owner','admin'].includes(m.role))) {
+          return res.status(403).json({ success: false, error: 'تحديث القالب متاح لمالك أو مدير مؤسسة فقط.' });
+        }
+        return next();
+      }
+
+      if (req.path === '/background/status' && !organizationId) {
+        if (memberOrgIds.size === 0) return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب.' });
+        res.locals.allowedOrgIds = Array.from(memberOrgIds);
+        return next();
+      }
+
+      if (req.path.startsWith('/background/ai-batches/') && req.path.endsWith('/retry')) {
+        const batchId = req.path.split('/')[3];
+        const ownedOrgId = Array.from(memberOrgIds).find((orgId: any) =>
+          batchQueue.getStatus(orgId).aiBatches.some((b: any) => b.batchId === batchId)
+        );
+        if (!ownedOrgId) return res.status(404).json({ success: false, error: 'لم يتم العثور على الدفعة.' });
+        if (!['owner','admin','accountant','sales','employee'].includes(roles.get(ownedOrgId) as string)) {
+          return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إعادة معالجة الفواتير.' });
+        }
+        return next();
+      }
+      if (req.path.startsWith('/background/exports/') && req.path.endsWith('/download')) {
+        const jobId = req.path.split('/')[3];
+        const owned = Array.from(memberOrgIds).some((orgId: any) =>
+          batchQueue.getStatus(orgId).exportJobs.some((j: any) => j.jobId === jobId || j.batchId === jobId)
+        );
+        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على مهمة التصدير.' });
+        return next();
+      }
+      if (req.path.startsWith('/background/jobs/') && req.path.endsWith('/dismiss')) {
+        const jobId = req.path.split('/')[3];
+        const owned = Array.from(memberOrgIds).some((orgId: any) => {
+          const status = batchQueue.getStatus(orgId);
+          return status.aiBatches.some((b: any) => b.batchId === jobId) ||
+            status.exportJobs.some((j: any) => j.jobId === jobId || j.batchId === jobId);
+        });
+        if (!owned) return res.status(404).json({ success: false, error: 'لم يتم العثور على المهمة.' });
+        return next();
+      }
+
+      if (req.path === '/supabase/bootstrap') {
+        if (memberOrgIds.size === 0) {
+          return res.status(403).json({ success: false, error: 'لا توجد مؤسسة مرتبطة بهذا الحساب. أنشئ مؤسسة أو اطلب دعوة.' });
+        }
+        res.locals.allowedOrgIds = Array.from(memberOrgIds);
+        return next();
+      }
+
+      // A new organization may be created by any authenticated user. Existing
+      // organizations require an owner/admin before they can be changed.
+      if (req.path === '/supabase/organizations' && req.method === 'POST') {
+        const { data: existing } = await admin.from('organizations').select('id').eq('id', organizationId).maybeSingle();
+        if (!existing) return next();
+        const currentRole = roles.get(organizationId);
+        if (!['owner','admin'].includes(currentRole as string)) {
+          return res.status(403).json({ success: false, error: 'تعديل إعدادات المؤسسة متاح للمالك أو المدير.' });
+        }
+      }
+      if (req.path === '/background/ai-batches' && !['owner','admin','accountant','sales','employee'].includes(roles.get(organizationId) as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إضافة فواتير إلى المعالجة.' });
+      }
+      if (req.path === '/background/exports' && !['owner','admin','accountant'].includes(roles.get(organizationId) as string)) {
+        return res.status(403).json({ success: false, error: 'تصدير ملفات المؤسسة متاح للمالك والمدير والمحاسب.' });
+      }
+
+      if (!organizationId || !memberOrgIds.has(organizationId)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك عضوية نشطة أو صلاحية الوصول إلى هذه المؤسسة.' });
+      }
+
+      const role = roles.get(organizationId);
+      const isOwnerAdmin = role === 'owner' || role === 'admin';
+      const staffRoles = ['owner','admin','accountant','sales','employee'];
+      if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && role !== 'owner') {
+        return res.status(403).json({ success: false, error: 'حذف المؤسسة متاح للمالك فقط.' });
+      }
+      if (req.method === 'DELETE' && req.path.startsWith('/supabase/invoices/') && !isOwnerAdmin) {
+        return res.status(403).json({ success: false, error: 'حذف الفواتير متاح للمالك أو المدير فقط.' });
+      }
+      if (req.path === '/supabase/invoices' && !staffRoles.includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إدخال الفواتير.' });
+      }
+      if (req.path === '/supabase/attachments' && !staffRoles.includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية رفع المرفقات.' });
+      }
+      if (req.path.startsWith('/supabase/custom-fields') && !['owner','admin','accountant'].includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'إدارة الحقول المخصصة متاحة للمالك والمدير والمحاسب.' });
+      }
+      if (req.path.startsWith('/supabase/exports') && !['owner','admin','accountant'].includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'تصدير البيانات متاح للمالك والمدير والمحاسب.' });
+      }
+      res.locals.organizationRole = role;
+      return next();
+    } catch (error: any) {
+      console.error('API authentication/authorization error:', error?.message || error);
+      return res.status(401).json({ success: false, error: 'تعذر التحقق من صلاحيات الحساب.' });
+    }
   });
 
   // =========================================================================
@@ -179,9 +351,17 @@ async function startServer() {
       typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
         ? req.query.organizationId.trim()
         : undefined;
+    const allowedOrgIds = (res.locals.allowedOrgIds as string[] | undefined) || [];
+    const scopedStatuses = organizationId
+      ? [batchQueue.getStatus(organizationId)]
+      : allowedOrgIds.map((id) => batchQueue.getStatus(id));
+    const aiBatches = scopedStatuses.flatMap((status) => status.aiBatches);
+    const exportJobs = scopedStatuses.flatMap((status) => status.exportJobs);
     res.json({
       success: true,
-      ...batchQueue.getStatus(organizationId),
+      hasActiveJobs: scopedStatuses.some((status) => status.hasActiveJobs),
+      aiBatches,
+      exportJobs,
     });
   });
 
@@ -235,17 +415,25 @@ async function startServer() {
         return res.status(500).json({ success: false, error: firstErr.message });
       }
 
+      const allowedOrgIds = new Set<string>(res.locals.allowedOrgIds || []);
+      const organizations = (orgsRes.data || []).filter((row: any) => allowedOrgIds.has(row.id));
+      const organizationInvoices = (invRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const invoiceIds = new Set(organizationInvoices.map((row: any) => row.id));
+      const organizationCustomFields = (cfRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const customFieldIds = new Set(organizationCustomFields.map((row: any) => row.id));
+      const exportBatches = (batchRes.data || []).filter((row: any) => allowedOrgIds.has(row.organization_id));
+      const exportBatchIds = new Set(exportBatches.map((row: any) => row.id));
       res.json({
         success: true,
         data: {
-          organizations: orgsRes.data || [],
-          invoices: invRes.data || [],
-          invoice_items: itemsRes.data || [],
-          invoice_attachments: attRes.data || [],
-          custom_fields: cfRes.data || [],
-          invoice_custom_values: icvRes.data || [],
-          export_batches: batchRes.data || [],
-          export_batch_items: batchItemsRes.data || [],
+          organizations,
+          invoices: organizationInvoices,
+          invoice_items: (itemsRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id)),
+          invoice_attachments: (attRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id)),
+          custom_fields: organizationCustomFields,
+          invoice_custom_values: (icvRes.data || []).filter((row: any) => invoiceIds.has(row.invoice_id) && customFieldIds.has(row.custom_field_id)),
+          export_batches: exportBatches,
+          export_batch_items: (batchItemsRes.data || []).filter((row: any) => exportBatchIds.has(row.export_batch_id) && invoiceIds.has(row.invoice_id)),
           template_versions: tplRes.data || [],
         },
       });
@@ -276,6 +464,19 @@ async function startServer() {
         { onConflict: 'id' }
       );
       if (error) throw error;
+
+      const authUser = (req as any).authUser;
+      if (authUser?.id) {
+        const { error: ownerError } = await client.from('organization_members').insert({
+          organization_id: id,
+          user_id: authUser.id,
+          role: 'owner',
+          status: 'active',
+          joined_at: new Date().toISOString(),
+        });
+        // A pre-existing member must never be promoted by an organization upsert.
+        if (ownerError && ownerError.code !== '23505') throw ownerError;
+      }
 
       await client.from('audit_logs').insert({
         organization_id: id,
@@ -354,6 +555,14 @@ async function startServer() {
       const { organization, invoice } = req.body || {};
       if (!organization?.id || !invoice?.id || !UUID_REGEX.test(organization.id) || !UUID_REGEX.test(invoice.id)) {
         return res.status(400).json({ success: false, error: 'معرف المؤسسة ومعرف الفاتورة UUID مطلوبان.' });
+      }
+
+      // Prevent primary-key collisions from moving an invoice across tenants.
+      const { data: existingInvoice, error: existingInvoiceError } = await client
+        .from('invoices').select('organization_id').eq('id', invoice.id).maybeSingle();
+      if (existingInvoiceError) throw existingInvoiceError;
+      if (existingInvoice && existingInvoice.organization_id !== organization.id) {
+        return res.status(403).json({ success: false, error: 'لا يمكن نقل فاتورة بين المؤسسات.' });
       }
 
       // Ensure organization exists first
@@ -511,6 +720,13 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'بيانات المرفق غير مكتملة.' });
       }
 
+      const { data: targetInvoice, error: targetInvoiceError } = await client
+        .from('invoices').select('organization_id').eq('id', invoiceId).maybeSingle();
+      if (targetInvoiceError) throw targetInvoiceError;
+      if (!targetInvoice || targetInvoice.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'الفاتورة لا تتبع المؤسسة المحددة.' });
+      }
+
       const cleanBase64 = stripDataUrlPrefix(imageBase64);
       const safeMime = normalizeMimeType(mimeType, fileName);
       const buf = Buffer.from(cleanBase64, 'base64');
@@ -589,6 +805,12 @@ async function startServer() {
       if (!UUID_REGEX.test(organizationId || '') || !UUID_REGEX.test(field?.id || '')) {
         return res.status(400).json({ success: false, error: 'معرفات UUID للحقل المخصص مطلوبة.' });
       }
+      const { data: existingField, error: existingFieldError } = await client
+        .from('custom_fields').select('organization_id').eq('id', field.id).maybeSingle();
+      if (existingFieldError) throw existingFieldError;
+      if (existingField && existingField.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'لا يمكن نقل حقل مخصص بين المؤسسات.' });
+      }
       const { error } = await client.from('custom_fields').upsert(
         {
           id: field.id,
@@ -647,6 +869,22 @@ async function startServer() {
 
       if (!UUID_REGEX.test(batchId || '') || !UUID_REGEX.test(organizationId || '')) {
         return res.status(400).json({ success: false, error: 'معرفات التصدير UUID مطلوبة.' });
+      }
+
+      const { data: existingBatch, error: existingBatchError } = await client
+        .from('export_batches').select('organization_id').eq('id', batchId).maybeSingle();
+      if (existingBatchError) throw existingBatchError;
+      if (existingBatch && existingBatch.organization_id !== organizationId) {
+        return res.status(403).json({ success: false, error: 'دفعة التصدير لا تتبع المؤسسة المحددة.' });
+      }
+      if (Array.isArray(entries) && entries.length > 0) {
+        const invoiceIds = [...new Set(entries.map((entry: any) => entry.invoiceId).filter(Boolean))];
+        const { data: ownedInvoices, error: ownedInvoicesError } = await client
+          .from('invoices').select('id').eq('organization_id', organizationId).in('id', invoiceIds);
+        if (ownedInvoicesError) throw ownedInvoicesError;
+        if ((ownedInvoices || []).length !== invoiceIds.length) {
+          return res.status(403).json({ success: false, error: 'تتضمن دفعة التصدير فواتير لا تتبع المؤسسة.' });
+        }
       }
 
       let storagePath: string | null = null;
