@@ -738,7 +738,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             </div>
           ) : (
             /* ==================== AI UPLOAD ==================== */
-            <div className="space-y-5">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain space-y-5 pb-2">
 
               {/* Manual / Auto Classification Selector for AI */}
               <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2">
