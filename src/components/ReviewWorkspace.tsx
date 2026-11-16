@@ -285,10 +285,11 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 total: toOptionalNum(it?.total),
               }))
             : currentInvoice.items,
-          customFieldsValues:
-            ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object'
-              ? { ...currentInvoice.customFieldsValues, ...ext.customFieldsExtracted }
-              : currentInvoice.customFieldsValues,
+          customFieldsValues: {
+            ...(currentInvoice.customFieldsValues || {}),
+            ...(ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object' ? ext.customFieldsExtracted : {}),
+            ...(ext.paymentMethod ? { __official_payment_method: ext.paymentMethod } : {}),
+          },
           status: 'تحتاج مراجعة',
           errorMessage: undefined,
           updatedAt: new Date().toISOString(),
