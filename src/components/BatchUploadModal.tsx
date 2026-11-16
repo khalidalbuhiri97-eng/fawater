@@ -83,6 +83,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     { file: File; base64: string; mimeType: string; classification: AiClassificationChoice }[]
   >([]);
   const [extracting, setExtracting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadProgressLabel, setUploadProgressLabel] = useState('تهيئة الملفات للرفع...');
 
   // Manual mode state (persists across preview/field edits and type toggles)
   const [manualType, setManualType] = useState<'مبيعات' | 'مشتريات'>('مبيعات');
@@ -282,6 +284,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     if (selectedFiles.length === 0) return;
 
     setExtracting(true);
+    setUploadProgress(3);
+    setUploadProgressLabel('تهيئة الفواتير ورفعها بأمان...');
     setErrorMsg('');
 
     try {
@@ -294,7 +298,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
       }> = [];
 
-      for (const item of selectedFiles) {
+      for (const [index, item] of selectedFiles.entries()) {
         const invId = generateUuid();
         try {
           await saveInvoiceImage(invId, item.base64, item.mimeType, {
@@ -315,12 +319,18 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           fileSize: item.file.size,
           manualDocumentType: item.classification,
         });
+        setUploadProgress(Math.min(85, Math.round(5 + ((index + 1) / selectedFiles.length) * 80)));
+        setUploadProgressLabel(`تم تجهيز ${index + 1} من ${selectedFiles.length} فاتورة`);
       }
 
+      setUploadProgress(92);
+      setUploadProgressLabel('جدولة الفواتير للمعالجة في الخلفية...');
       const queued = await enqueueAiBackgroundBatch({
         organization: operation,
         files: preparedFiles,
       });
+      setUploadProgress(100);
+      setUploadProgressLabel('اكتمل الرفع والجدولة بنجاح');
 
       const nowIso = new Date().toISOString();
       onUpdateOperation({
@@ -336,6 +346,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
       setErrorMsg(err?.message || 'تعذر بدء المعالجة في الخلفية.');
     } finally {
       setExtracting(false);
+      setUploadProgress(0);
+      setUploadProgressLabel('تهيئة الملفات للرفع...');
     }
   };
 
@@ -367,30 +379,30 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
         {/* Mode Switcher */}
         {!extracting && (
-          <div className="px-6 pt-4 pb-3 bg-slate-50 border-b border-slate-200 shrink-0">
-            <div className="grid grid-cols-2 gap-3">
+          <div className="px-6 pt-3 pb-2 bg-slate-50 border-b border-slate-200 shrink-0">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setMode('manual');
                   setErrorMsg('');
                 }}
-                className={`p-3 rounded-2xl border text-right transition flex items-center gap-3 ${
+                className={`p-2 sm:p-2.5 rounded-xl border text-right transition flex items-center gap-2 ${
                   mode === 'manual'
                     ? 'border-slate-900 bg-white text-slate-950 ring-2 ring-slate-900/15 shadow-xs'
                     : 'border-slate-200 bg-slate-100/70 text-slate-600 hover:bg-white'
                 }`}
               >
                 <div
-                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
                     mode === 'manual' ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-600'
                   }`}
                 >
-                  <PenLine className="w-4 h-4" />
+                  <PenLine className="w-3.5 h-3.5" />
                 </div>
                 <div>
-                  <div className="font-bold text-xs sm:text-sm">الوضع الأول: الإدخال اليدوي</div>
-                  <div className="text-[11px] text-slate-500">معاينة الصورة وأسفلها جميع أعمدة Excel (بدون Gemini)</div>
+                  <div className="font-bold text-[11px] sm:text-xs">الوضع الأول: الإدخال اليدوي</div>
+                  <div className="text-[10px] text-slate-500 leading-snug">معاينة الصورة وأعمدة Excel (بدون Gemini)</div>
                 </div>
               </button>
 
@@ -412,11 +424,11 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     mode === 'ai' ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
                   }`}
                 >
-                  <Sparkles className="w-4 h-4" />
+                  <Sparkles className="w-3.5 h-3.5" />
                 </div>
-                <div>
-                  <div className="font-bold text-xs sm:text-sm">الوضع الثاني: الذكاء الاصطناعي</div>
-                  <div className="text-[11px] text-slate-500">قراءة الصورة وتصنيف مبيعات/مشتريات تلقائياً</div>
+                <div className="min-w-0">
+                  <div className="font-bold text-[11px] sm:text-xs">الوضع الثاني: الذكاء الاصطناعي</div>
+                  <div className="text-[10px] text-slate-500 leading-snug">قراءة الصورة وتصنيفها تلقائياً</div>
                 </div>
               </button>
             </div>
@@ -656,23 +668,33 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             </div>
           ) : extracting ? (
             /* ==================== AI QUEUING ==================== */
-            <div className="py-12 text-center space-y-4">
-              <Loader2 className="w-12 h-12 text-emerald-600 animate-spin mx-auto" />
-              <div>
-                <h4 className="font-bold text-slate-800 text-lg mb-1">
-                  جاري رفع الفواتير وجدولتها للمعالجة في الخلفية...
-                </h4>
-                <p className="text-sm text-slate-500">
-                  يتم حفظ الفواتير على الخادم لمتابعة تحليلها بواسطة Gemini حتى لو انتقلت لصفحة أخرى أو أغلقت المتصفح.
-                </p>
+            <div className="mx-auto flex min-h-[220px] max-w-xl flex-col justify-center px-2 py-8 text-center space-y-4">
+              <div className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-700">
+                <span>جاري رفع الفواتير وجدولتها</span>
+                <span className="tabular-nums text-emerald-700">{uploadProgress}%</span>
               </div>
+              <div
+                className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200"
+                role="progressbar"
+                aria-label="تقدم رفع الفواتير وجدولتها"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={uploadProgress}
+              >
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all duration-300 ease-out"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+              <p className="text-xs text-slate-500" aria-live="polite">{uploadProgressLabel}</p>
+              <p className="text-[11px] text-slate-400">سيستمر تحليل الفواتير في الخلفية بعد اكتمال الجدولة.</p>
             </div>
           ) : (
             /* ==================== AI UPLOAD ==================== */
             <div className="space-y-5">
 
               {/* Manual / Auto Classification Selector for AI */}
-              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/80 space-y-2.5">
+              <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-xs font-bold text-slate-800">
                     تصنيف الفواتير للذكاء الاصطناعي:
@@ -681,7 +703,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                     يمكنك تحديد النوع يدوياً مسبقاً أو تركه تلقائياً، كما يمكنك التخصيص لكل ملف
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-2.5">
+                <div className="grid grid-cols-3 gap-2">
                   {(
                     [
                       { id: 'auto', label: 'تلقائي (AI)', sub: 'يحدد Gemini النوع' },
@@ -693,14 +715,14 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                       key={opt.id}
                       type="button"
                       onClick={() => handleBatchClassificationChange(opt.id)}
-                      className={`p-2.5 rounded-xl border text-right transition ${
+                      className={`p-2 sm:p-2.5 rounded-lg border text-right transition ${
                         aiDefaultClassification === opt.id
                           ? 'border-emerald-600 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-500/20'
                           : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
                       }`}
                     >
-                      <div className="font-bold text-xs">{opt.label}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{opt.sub}</div>
+                      <div className="font-bold text-[11px]">{opt.label}</div>
+                      <div className="text-[9px] leading-snug text-slate-500 mt-0.5">{opt.sub}</div>
                     </button>
                   ))}
                 </div>
