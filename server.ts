@@ -102,11 +102,11 @@ async function startServer() {
 
       // Resolve tenant IDs from resource IDs when the client only supplies a record ID.
       if (!organizationId && req.path.startsWith('/supabase/invoices/')) {
-        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.params.id).maybeSingle();
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
         organizationId = data?.organization_id || '';
       }
       if (!organizationId && req.path.startsWith('/supabase/attachments/')) {
-        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.params.invoiceId).maybeSingle();
+        const { data } = await admin.from('invoices').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
         organizationId = data?.organization_id || '';
       }
       if (!organizationId && req.path.startsWith('/supabase/custom-fields/')) {
@@ -114,7 +114,7 @@ async function startServer() {
         organizationId = data?.organization_id || '';
       }
       if (!organizationId && req.path.startsWith('/supabase/exports/')) {
-        const { data } = await admin.from('export_batches').select('organization_id').eq('id', req.params.batchId).maybeSingle();
+        const { data } = await admin.from('export_batches').select('organization_id').eq('id', req.path.split('/')[3]).maybeSingle();
         organizationId = data?.organization_id || '';
       }
 
@@ -132,7 +132,7 @@ async function startServer() {
       }
 
       if (req.path.startsWith('/background/ai-batches/') && req.path.endsWith('/retry')) {
-        const batchId = req.params.batchId;
+        const batchId = req.path.split('/')[3];
         const owned = Array.from(memberOrgIds).some((orgId: any) =>
           batchQueue.getStatus(orgId).aiBatches.some((b: any) => b.batchId === batchId)
         );
@@ -140,7 +140,7 @@ async function startServer() {
         return next();
       }
       if (req.path.startsWith('/background/exports/') && req.path.endsWith('/download')) {
-        const jobId = req.params.jobId;
+        const jobId = req.path.split('/')[3];
         const owned = Array.from(memberOrgIds).some((orgId: any) =>
           batchQueue.getStatus(orgId).exportJobs.some((j: any) => j.jobId === jobId || j.batchId === jobId)
         );
@@ -148,7 +148,7 @@ async function startServer() {
         return next();
       }
       if (req.path.startsWith('/background/jobs/') && req.path.endsWith('/dismiss')) {
-        const jobId = req.params.id;
+        const jobId = req.path.split('/')[3];
         const owned = Array.from(memberOrgIds).some((orgId: any) => {
           const status = batchQueue.getStatus(orgId);
           return status.aiBatches.some((b: any) => b.batchId === jobId) ||
@@ -183,11 +183,18 @@ async function startServer() {
 
       const role = roles.get(organizationId);
       const isOwnerAdmin = role === 'owner' || role === 'admin';
+      const staffRoles = ['owner','admin','accountant','sales','employee'];
       if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && role !== 'owner') {
         return res.status(403).json({ success: false, error: 'حذف المؤسسة متاح للمالك فقط.' });
       }
       if (req.method === 'DELETE' && req.path.startsWith('/supabase/invoices/') && !isOwnerAdmin) {
         return res.status(403).json({ success: false, error: 'حذف الفواتير متاح للمالك أو المدير فقط.' });
+      }
+      if (req.path === '/supabase/invoices' && !staffRoles.includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية إدخال الفواتير.' });
+      }
+      if (req.path === '/supabase/attachments' && !staffRoles.includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية رفع المرفقات.' });
       }
       if (req.path.startsWith('/supabase/custom-fields') && !['owner','admin','accountant'].includes(role as string)) {
         return res.status(403).json({ success: false, error: 'إدارة الحقول المخصصة متاحة للمالك والمدير والمحاسب.' });
