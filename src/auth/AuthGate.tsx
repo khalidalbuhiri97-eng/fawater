@@ -27,8 +27,19 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       setReady(true);
       return;
     }
+    const recoveryFlow = new URLSearchParams(window.location.search).get('flow') === 'recovery';
+    if (recoveryFlow) setMode('update');
     supabase.auth.getSession().then(({ data }) => {
-      if (active) { setLocalStoreUserScope(data.session?.user.id || null); setSession(data.session); setReady(true); }
+      if (active) {
+        setLocalStoreUserScope(data.session?.user.id || null);
+        setSession(data.session);
+        setReady(true);
+        if (recoveryFlow) {
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('flow');
+          window.history.replaceState({}, document.title, cleanUrl.toString());
+        }
+      }
     }).catch(() => { if (active) setReady(true); });
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (active) {
@@ -66,7 +77,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         setMessage('تم تحديث كلمة المرور. يمكنك تسجيل الدخول الآن.');
       } else {
         const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-          redirectTo: window.location.origin,
+          redirectTo: `${window.location.origin}/?flow=recovery`,
         });
         if (authError) throw authError;
         setMessage('إذا كان البريد مسجلاً، فستصلك رسالة لاستعادة كلمة المرور.');
