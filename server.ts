@@ -42,6 +42,8 @@ async function startServer() {
   // =========================================================================
   // Health & Status
   // =========================================================================
+  app.get('/api/health/live', (_req, res) => res.status(200).json({ ok: true }));
+
   app.get('/api/health', async (_req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     const geminiConfigured = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
