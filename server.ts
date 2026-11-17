@@ -266,16 +266,11 @@ async function startServer() {
     });
   });
 
-  app.post('/api/background/ai-batches/:batchId/retry', async (req, res) => {
-    try {
-      const batch = await batchQueue.retryFailedAiBatchItems(req.params.batchId);
-      if (!batch) {
-        return res.status(404).json({ success: false, error: 'لم يتم العثور على الدفعة المطلوبة.' });
-      }
-      res.status(202).json({ success: true, batchId: batch.batchId });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || 'تعذر إعادة محاولة الدفعة.' });
-    }
+  app.post('/api/background/ai-batches/:batchId/retry', async (_req, res) => {
+    res.status(410).json({
+      success: false,
+      error: 'إعادة التحليل في الخلفية متوقفة. افتح صفحة رفع الفواتير وابدأ التحليل المباشر.',
+    });
   });
 
   app.post('/api/background/exports', async (req, res) => {
