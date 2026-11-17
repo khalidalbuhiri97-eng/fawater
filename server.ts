@@ -316,6 +316,10 @@ export async function createServerApp() {
       if (files.length > 50) {
         return res.status(413).json({ success: false, error: 'الحد الأقصى للدفعة الواحدة 50 فاتورة.' });
       }
+      const totalFileBytes = files.reduce((sum: number, file: any) => sum + Number(file?.fileSize || 0), 0);
+      if (totalFileBytes > 150 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: 'إجمالي حجم الدفعة يتجاوز 150 ميغابايت.' });
+      }
       for (const file of files) {
         const hasBase64 = typeof file?.imageBase64 === 'string' && file.imageBase64.length > 0;
         const hasStoredPath = typeof file?.storagePath === 'string' && file.storagePath.length > 0;
