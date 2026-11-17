@@ -1041,7 +1041,9 @@ export async function createServerApp() {
   // Vite Middleware / Production Static Serve
   // =========================================================================
   const isProduction = process.env.NODE_ENV === 'production';
-  if (!isProduction) {
+  if (process.env.VERCEL) {
+    // Vercel serves the Vite output as static assets; this function handles API routes only.
+  } else if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
