@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
+import { waitUntil } from '@vercel/functions';
 import { getSupabaseAdmin, testSupabaseConnection } from './server/supabaseAdmin.js';
 import {
   extractInvoiceWithGemini,
@@ -290,6 +291,7 @@ export async function createServerApp() {
         organization,
         files,
       });
+      if (process.env.VERCEL) waitUntil(batchQueue.processPendingQueues());
       return res.status(202).json({
         success: true,
         batchId: queued.batch.batchId,
@@ -310,6 +312,7 @@ export async function createServerApp() {
     try {
       const batch = await batchQueue.retryFailedAiBatchItems(req.params.batchId);
       if (!batch) return res.status(404).json({ success: false, error: 'لم يتم العثور على دفعة المعالجة.' });
+      if (process.env.VERCEL) waitUntil(batchQueue.processPendingQueues());
       return res.json({ success: true, batchId: batch.batchId });
     } catch (error: any) {
       console.error('[background-ai] retry failed:', error?.message || error);
@@ -332,6 +335,7 @@ export async function createServerApp() {
         invoices,
         alreadyExportedIds: Array.isArray(alreadyExportedIds) ? alreadyExportedIds : [],
       });
+      if (process.env.VERCEL) waitUntil(batchQueue.processPendingQueues());
 
       res.status(202).json({
         success: true,
