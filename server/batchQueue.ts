@@ -1166,7 +1166,7 @@ export class ServerBatchQueueManager {
     this.exportQueue.push(jobId);
 
     await this.persistLocalState();
-    void this.processExportQueue();
+    if (!process.env.VERCEL) void this.processExportQueue();
     return job;
   }
 
