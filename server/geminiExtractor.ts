@@ -67,9 +67,12 @@ export function stripDataUrlPrefix(base64: string): string {
   return base64.trim();
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string, onTimeout?: () => void): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(timeoutMessage));
+    }, ms);
     promise.then(
       (val) => {
         clearTimeout(timer);
@@ -245,7 +248,13 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
 
     let response: any;
     let lastError: any;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // One invoice is processed per Vercel invocation. Two bounded attempts keep
+    // execution below the serverless time limit and avoid orphaned Gemini calls.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const requestController = new AbortController();
+      const forwardAbort = () => requestController.abort(abortSignal?.reason);
+      if (abortSignal?.aborted) forwardAbort();
+      else abortSignal?.addEventListener('abort', forwardAbort, { once: true });
       try {
         response = await withTimeout(
           ai.models.generateContent({
@@ -265,20 +274,24 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
             },
             config: {
               responseMimeType: 'application/json',
-              ...(abortSignal ? { abortSignal } : {}),
+              abortSignal: requestController.signal,
             },
           }),
-          45000,
-          'انتهت مهلة الاتصال بخدمة Gemini (45 ثانية). يرجى إعادة المحاولة.'
+          20000,
+          'انتهت مهلة الاتصال بخدمة Gemini (20 ثانية). يرجى إعادة المحاولة.',
+          () => requestController.abort()
         );
         break;
       } catch (err: any) {
+        requestController.abort();
         lastError = err;
-        if (attempt < 2 && isRetryableGeminiError(err)) {
-          await sleep(1000 * Math.pow(2, attempt));
+        if (attempt < 1 && isRetryableGeminiError(err)) {
+          await sleep(1000);
           continue;
         }
         throw err;
+      } finally {
+        abortSignal?.removeEventListener('abort', forwardAbort);
       }
     }
 
