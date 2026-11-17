@@ -61,8 +61,8 @@ async function startServer() {
   app.use('/api', async (req, res, next) => {
     const authorization = req.headers.authorization || '';
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
-    const url = process.env.SUPABASE_URL;
+    const publicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_1hfYV443ep4J0mN2aO_e2g_BBPJmcXq';
+    const url = process.env.SUPABASE_URL || 'https://fryrlbgonkvounnarfwd.supabase.co';
     if (!token || !publicKey || !url) {
       return res.status(401).json({ success: false, error: 'يلزم تسجيل الدخول للمتابعة.' });
     }
