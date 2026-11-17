@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BackgroundQueueStatus, Operation, SyncOverview } from './types';
+import { authenticatedFetch } from './auth/supabaseClient';
 import {
   initializeDatabase,
   getOperations,
@@ -121,9 +122,27 @@ export default function App() {
     let mounted = true;
     const checkRuntimeHealth = async () => {
       try {
-        const response = await fetch('/api/health', { cache: 'no-store' });
-        const data = await response.json();
-        if (mounted) setRuntimeHealth(data);
+        const [healthResponse, supabaseResponse] = await Promise.all([
+          fetch('/api/health', { cache: 'no-store' }),
+          authenticatedFetch('/api/supabase/status', { cache: 'no-store' }),
+        ]);
+        const health = await healthResponse.json().catch(() => ({}));
+        // The detailed Supabase diagnostics require a valid signed-in session.
+        if (supabaseResponse.status === 401) {
+          if (mounted) setRuntimeHealth(null);
+          return;
+        }
+        const supabase = await supabaseResponse.json().catch(() => ({}));
+        if (mounted) setRuntimeHealth({
+          geminiConfigured: Boolean(health.geminiConfigured),
+          supabase: {
+            connected: Boolean(supabase.connected),
+            bucketsReady: Boolean(supabase.bucketsReady),
+            error: supabase.error,
+            missingBuckets: supabase.missingBuckets || [],
+            missingOrDeniedTables: supabase.missingOrDeniedTables || [],
+          },
+        });
       } catch {
         if (mounted) setRuntimeHealth({
           geminiConfigured: false,
