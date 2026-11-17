@@ -69,7 +69,7 @@ interface PersistedQueueState {
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const QUEUE_DATA_DIR = path.resolve(process.cwd(), 'server/.queue_data');
+const QUEUE_DATA_DIR = process.env.VERCEL ? '/tmp/fawater-queue' : path.resolve(process.cwd(), 'server/.queue_data');
 const UPLOADS_DIR = path.join(QUEUE_DATA_DIR, 'uploads');
 const EXPORTS_DIR = path.join(QUEUE_DATA_DIR, 'exports');
 const STATE_FILE = path.join(QUEUE_DATA_DIR, 'queue-state.json');
