@@ -966,7 +966,14 @@ export class ServerBatchQueueManager {
         // Idempotency guard: never re-process completed invoices.
         // A conditional database update claims the pending job atomically across serverless instances.
         if (item.status === 'completed') continue;
-        const claimed = await this.claimAiJob(item);
+        let claimed = false;
+        try {
+          claimed = await this.claimAiJob(item);
+        } catch (claimError) {
+          // Preserve the in-memory item so a transient database outage cannot drop the job.
+          this.aiQueue.unshift(next);
+          throw claimError;
+        }
         if (!claimed) continue;
         processedCount++;
 
