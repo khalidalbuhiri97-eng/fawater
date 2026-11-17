@@ -34,7 +34,7 @@ function requireSupabaseOr503(res: express.Response) {
   return client;
 }
 
-async function startServer() {
+export async function createServerApp() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1061,10 +1061,18 @@ async function startServer() {
     console.error('[batchQueue] Startup recovery error:', err);
   }
 
-  const port = Number(process.env.PORT || 3000);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${port}`);
-  });
+  return app;
 }
 
-startServer();
+export const serverAppPromise = createServerApp();
+
+// Vercel invokes the exported Express app as a serverless function.
+// Persistent Bun/Docker deployments start a normal HTTP listener.
+if (!process.env.VERCEL) {
+  void serverAppPromise.then((app) => {
+    const port = Number(process.env.PORT || 3000);
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`Server running on http://0.0.0.0:${port}`);
+    });
+  });
+}
