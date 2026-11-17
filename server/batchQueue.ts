@@ -162,7 +162,7 @@ export class ServerBatchQueueManager {
         status: item.status,
         attempts: item.attempts,
         error_message: item.errorMessage || null,
-        extracted_data: item.status === 'completed' ? (item.invoiceRecord || null) : null,
+        extracted_data: item.invoiceRecord || null,
         locked_at: item.status === 'processing' ? item.updatedAt : null,
         completed_at: item.status === 'completed' ? item.updatedAt : null,
         updated_at: item.updatedAt,
@@ -433,6 +433,80 @@ export class ServerBatchQueueManager {
                   ...remoteJob,
                   exportRelPath: remoteJob.exportRelPath || this.state.exportJobs[localIdx].exportRelPath,
                 };
+              }
+            }
+          }
+
+          // The normalized queue tables are the source of truth; app_settings is only a legacy mirror.
+          const { data: durableBatches, error: durableBatchError } = await client
+            .from('ai_processing_batches')
+            .select('*')
+            .in('status', ['pending', 'processing', 'completed', 'failed']);
+          if (durableBatchError) throw durableBatchError;
+
+          const durableBatchIds = (durableBatches || []).map((row: any) => row.id);
+          if (durableBatchIds.length > 0) {
+            const orgIds = Array.from(new Set((durableBatches || []).map((row: any) => row.organization_id)));
+            const [{ data: durableJobs, error: durableJobsError }, { data: orgRows, error: orgError }, { data: customRows, error: customError }] =
+              await Promise.all([
+                client.from('ai_processing_jobs').select('*').in('batch_id', durableBatchIds),
+                client.from('organizations').select('id,name,activity_type,excel_file_name').in('id', orgIds),
+                client.from('custom_fields').select('*').in('organization_id', orgIds),
+              ]);
+            if (durableJobsError) throw durableJobsError;
+            if (orgError) throw orgError;
+            if (customError) throw customError;
+
+            const orgMap = new Map((orgRows || []).map((row: any) => [row.id, row]));
+            const fieldsByOrg = new Map<string, any[]>();
+            for (const field of customRows || []) {
+              const list = fieldsByOrg.get(field.organization_id) || [];
+              list.push(field);
+              fieldsByOrg.set(field.organization_id, list);
+            }
+
+            for (const durableBatch of durableBatches || []) {
+              const org: any = orgMap.get(durableBatch.organization_id);
+              if (!org) continue;
+              const jobs = (durableJobs || []).filter((job: any) => job.batch_id === durableBatch.id);
+              const restored: AiBatchState = {
+                batchId: durableBatch.id,
+                createdBy: durableBatch.created_by,
+                organizationId: durableBatch.organization_id,
+                organizationName: org.name,
+                activityType: org.activity_type,
+                excelFileName: org.excel_file_name,
+                customFields: fieldsByOrg.get(org.id) || [],
+                supabaseSynced: true,
+                dismissed: false,
+                createdAt: durableBatch.created_at,
+                updatedAt: durableBatch.updated_at,
+                items: jobs.map((job: any) => ({
+                  invoiceId: job.invoice_id,
+                  fileName: job.file_name,
+                  mimeType: job.mime_type,
+                  fileSize: Number(job.file_size || 0),
+                  manualDocumentType: job.manual_document_type,
+                  status: job.status === 'cancelled' ? 'failed' : job.status,
+                  attempts: Number(job.attempts || 0),
+                  errorMessage: job.error_message || undefined,
+                  storagePath: job.storage_path,
+                  invoiceRecord: job.extracted_data || undefined,
+                  updatedAt: job.updated_at,
+                })),
+              };
+              const existingIndex = this.state.aiBatches.findIndex((batch) => batch.batchId === restored.batchId);
+              if (existingIndex < 0) {
+                this.state.aiBatches.push(restored);
+              } else {
+                const existing = this.state.aiBatches[existingIndex];
+                const restoredItems = new Map(restored.items.map((item) => [item.invoiceId, item]));
+                existing.createdBy = restored.createdBy;
+                existing.items = existing.items.map((item) => {
+                  const durable = restoredItems.get(item.invoiceId);
+                  return durable && durable.updatedAt >= item.updatedAt ? { ...item, ...durable } : item;
+                });
+                existing.updatedAt = restored.updatedAt > existing.updatedAt ? restored.updatedAt : existing.updatedAt;
               }
             }
           }
