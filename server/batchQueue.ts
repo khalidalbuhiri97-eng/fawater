@@ -106,6 +106,7 @@ export class ServerBatchQueueManager {
   private aiWorkerRunning = false;
   private exportQueue: string[] = [];
   private exportWorkerRunning = false;
+  private pendingProcessorRunning = false;
   private orgExportLocks = new Map<string, Promise<void>>();
   private persistChain: Promise<void> = Promise.resolve();
   private initialized = false;
@@ -577,7 +578,7 @@ export class ServerBatchQueueManager {
         }
         if (item.status === 'processing') {
           const lastLock = Date.parse(item.updatedAt || '');
-          const lockIsRecent = Number.isFinite(lastLock) && Date.now() - lastLock < 8 * 60 * 1000;
+          const lockIsRecent = Number.isFinite(lastLock) && Date.now() - lastLock < 90 * 1000;
           if (lockIsRecent) continue;
           item.status = 'pending';
         }
@@ -906,15 +907,24 @@ export class ServerBatchQueueManager {
     throw new Error('تعذر العثور على ملف الفاتورة في الخادم أو التخزين السحابي للمعالجة.');
   }
 
-  public async processPendingQueues(maxAiJobs = process.env.VERCEL ? 5 : Number.POSITIVE_INFINITY): Promise<void> {
-    const aiWorkerAlreadyRunning = this.aiWorkerRunning;
-    const exportWorkerAlreadyRunning = this.exportWorkerRunning;
-    await Promise.all([this.processAiQueue(maxAiJobs), this.processExportQueue()]);
+  public async processPendingQueues(maxAiJobs = process.env.VERCEL ? 1 : Number.POSITIVE_INFINITY): Promise<void> {
+    if (this.pendingProcessorRunning) return;
+    this.pendingProcessorRunning = true;
+    try {
+      // Vercel instances are ephemeral. Refresh the durable Supabase queue on
+      // every worker invocation, not only once per warm module instance.
+      if (process.env.VERCEL) {
+        this.initialized = false;
+        await this.recoverPendingJobs();
+      }
+      const aiWorkerAlreadyRunning = this.aiWorkerRunning;
+      const exportWorkerAlreadyRunning = this.exportWorkerRunning;
+      await Promise.all([this.processAiQueue(maxAiJobs), this.processExportQueue()]);
 
-    // Vercel background functions have a finite execution window. Chain a fresh
-    // invocation while durable jobs remain so large batches continue after the
-    // original upload request and after the user closes the page.
-    if (process.env.VERCEL && !aiWorkerAlreadyRunning && !exportWorkerAlreadyRunning && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
+      // Vercel background functions have a finite execution window. Chain a fresh
+      // invocation while durable jobs remain so large batches continue after the
+      // original upload request and after the user closes the page.
+      if (process.env.VERCEL && !aiWorkerAlreadyRunning && !exportWorkerAlreadyRunning && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
       const configuredAppUrl = process.env.APP_URL?.trim();
       const baseUrl = (configuredAppUrl?.startsWith('https://') || configuredAppUrl?.startsWith('http://')
         ? configuredAppUrl
@@ -934,6 +944,9 @@ export class ServerBatchQueueManager {
       } else {
         console.error('[batchQueue] VERCEL_URL/APP_URL or SUPABASE_SERVICE_ROLE_KEY is missing; remaining background jobs will resume on the next API request.');
       }
+    }
+    } finally {
+      this.pendingProcessorRunning = false;
     }
   }
 
