@@ -228,8 +228,15 @@ async function startServer() {
   // Gemini Invoice Extraction (Single Sync + Background Batch Queue)
   // =========================================================================
   app.post('/api/extract-invoice', async (req, res) => {
+    const extractionController = new AbortController();
+    const cancelOnDisconnect = () => {
+      if (!res.writableEnded) extractionController.abort();
+    };
+    req.on('aborted', cancelOnDisconnect);
+    res.on('close', cancelOnDisconnect);
     try {
-      const sanitized = await extractInvoiceWithGemini(req.body || {});
+      const sanitized = await extractInvoiceWithGemini(req.body || {}, extractionController.signal);
+      if (extractionController.signal.aborted || res.destroyed) return;
       res.json({ success: true, data: sanitized });
     } catch (error: any) {
       const errMsg = error?.message || 'حدث خطأ أثناء معالجة الفاتورة بالذكاء الاصطناعي';
