@@ -132,7 +132,7 @@ export default function App() {
       }
     };
     void checkRuntimeHealth();
-    const interval = window.setInterval(() => void checkRuntimeHealth(), 30000);
+    const interval = window.setInterval(() => void checkRuntimeHealth(), 120000);
     return () => { mounted = false; window.clearInterval(interval); };
   }, []);
 
