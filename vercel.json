@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "framework": null,
+  "buildCommand": "bun run build",
+  "outputDirectory": "dist",
+  "installCommand": "bun install --frozen-lockfile",
+  "functions": {
+    "api/[...path].ts": {
+      "maxDuration": 300
+    }
+  }
+}
