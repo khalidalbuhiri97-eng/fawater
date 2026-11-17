@@ -301,6 +301,7 @@ export async function createServerApp() {
     if (!(req as any).internalWorker) {
       return res.status(401).json({ success: false, error: 'غير مصرح بتشغيل عامل المعالجة.' });
     }
+    if (process.env.VERCEL) waitUntil(batchQueue.processPendingQueues());
     return res.status(202).json({ success: true, accepted: true });
   });
 
@@ -423,6 +424,7 @@ export async function createServerApp() {
       : allowedOrgIds.map((id) => batchQueue.getStatus(id));
     const aiBatches = scopedStatuses.flatMap((status) => status.aiBatches);
     const exportJobs = scopedStatuses.flatMap((status) => status.exportJobs);
+    if (process.env.VERCEL) waitUntil(batchQueue.processPendingQueues());
     res.json({
       success: true,
       hasActiveJobs: scopedStatuses.some((status) => status.hasActiveJobs),
