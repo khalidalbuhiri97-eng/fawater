@@ -330,65 +330,39 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   };
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0 || extracting) return;
-
+    if (selectedFiles.length > 50) { setErrorMsg('الحد الأقصى للدفعة الواحدة 50 فاتورة.'); return; }
     setExtracting(true);
     setUploadProgress(0);
-    setUploadProgressLabel('تجهيز الملفات وحفظها في التخزين السحابي...');
+    setUploadProgressLabel('تهيئة الرفع الآمن إلى التخزين السحابي...');
     setErrorMsg('');
-
     try {
-      const files: Array<{
-        invoiceId: string;
-        imageBase64: string;
-        mimeType: string;
-        fileName: string;
-        fileSize: number;
-        manualDocumentType: AiClassificationChoice;
-      }> = [];
-      let totalBytes = 0;
-
-      for (let index = 0; index < selectedFiles.length; index++) {
-        const item = selectedFiles[index];
-        if (item.file.size > 15 * 1024 * 1024) {
-          throw new Error(`حجم الملف "${item.file.name}" يتجاوز 15 ميغابايت.`);
-        }
-        totalBytes += item.file.size;
-        // Keep the JSON request below Express's 50 MB body limit after base64 expansion.
-        if (totalBytes > 34 * 1024 * 1024) {
-          throw new Error('إجمالي حجم الدفعة كبير جداً. قسّم الملفات إلى دفعات أصغر (حد تقريبي 34 ميغابايت).');
-        }
-        setUploadProgress(Math.round(((index + 1) / selectedFiles.length) * 25));
-        setUploadProgressLabel(`تجهيز الملف ${index + 1} من ${selectedFiles.length}: ${item.file.name}`);
-        const imageBase64 = await fileToBase64(item.file);
-        files.push({
-          invoiceId: generateUuid(),
-          imageBase64,
-          mimeType: item.file.type || 'image/jpeg',
-          fileName: item.file.name,
-          fileSize: item.file.size,
-          manualDocumentType: item.classification,
-        });
-      }
-
-      setUploadProgress(35);
-      setUploadProgressLabel('رفع الصور وحفظ مهام التحليل في Supabase...');
-      const queued = await enqueueAiBackgroundBatch({ organization: operation, files });
-
+      const files = selectedFiles.map((item) => {
+        if (item.file.size > 15 * 1024 * 1024) throw new Error(`حجم الملف "${item.file.name}" يتجاوز 15 ميغابايت.`);
+        return {
+          invoiceId: generateUuid(), file: item.file, mimeType: item.file.type || 'image/jpeg',
+          fileName: item.file.name, fileSize: item.file.size, manualDocumentType: item.classification,
+        };
+      });
+      const queued = await enqueueAiBackgroundBatch({
+        organization: operation,
+        files,
+        onProgress: (completed, total, fileName) => {
+          setUploadProgress(Math.round((completed / Math.max(total, 1)) * 75));
+          setUploadProgressLabel(`تم رفع ${completed} من ${total}: ${fileName}`);
+        },
+      });
+      setUploadProgress(92);
+      setUploadProgressLabel('تم حفظ المهام والبيانات في قاعدة البيانات...');
       if (queued.initialInvoices.length > 0) {
-        onUpdateOperation({
-          ...operation,
-          invoices: [...queued.initialInvoices, ...(operation.invoices || [])],
-          updatedAt: new Date().toISOString(),
-        });
+        onUpdateOperation({ ...operation, invoices: [...queued.initialInvoices, ...(operation.invoices || [])], updatedAt: new Date().toISOString() });
       }
-
       setUploadProgress(100);
-      setUploadProgressLabel(`تم حفظ ${queued.initialInvoices.length} فاتورة في الطابور. سيستمر التحليل حتى بعد إغلاق هذه النافذة.`);
+      setUploadProgressLabel(`تم حفظ ${queued.initialInvoices.length} فاتورة في الطابور. سيستمر التحليل بعد إغلاق الصفحة.`);
       setSelectedFiles([]);
       onBackgroundBatchQueued?.(queued.batchId);
       onClose();
     } catch (error: any) {
-      setErrorMsg(error?.message || 'تعذر إرسال الفواتير إلى طابور المعالجة الخلفية.');
+      setErrorMsg(error?.message || 'تعذر رفع الفواتير إلى التخزين الآمن أو جدولة التحليل.');
     } finally {
       setExtracting(false);
       setUploadProgress(0);
