@@ -41,6 +41,7 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
   const [syncOverview, setSyncOverview] = useState<SyncOverview | undefined>(undefined);
   const [bgStatus, setBgStatus] = useState<BackgroundQueueStatus | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<{ geminiConfigured: boolean; supabase?: { connected: boolean; bucketsReady: boolean; error?: string; missingBuckets?: string[] } } | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const [isProcessingDialogOpen, setIsProcessingDialogOpen] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'dashboard' | 'review'>('home');
@@ -115,6 +116,25 @@ export default function App() {
       unsubscribe();
     };
   }, [pollBackgroundStatus]);
+
+  useEffect(() => {
+    let mounted = true;
+    const checkRuntimeHealth = async () => {
+      try {
+        const response = await fetch('/api/health', { cache: 'no-store' });
+        const data = await response.json();
+        if (mounted) setRuntimeHealth(data);
+      } catch {
+        if (mounted) setRuntimeHealth({
+          geminiConfigured: false,
+          supabase: { connected: false, bucketsReady: false, error: 'تعذر الوصول إلى خادم التطبيق.' },
+        });
+      }
+    };
+    void checkRuntimeHealth();
+    const interval = window.setInterval(() => void checkRuntimeHealth(), 30000);
+    return () => { mounted = false; window.clearInterval(interval); };
+  }, []);
 
   useEffect(() => {
     if (!bgStatus?.hasActiveJobs) return;
@@ -288,6 +308,17 @@ export default function App() {
         onOpenProcessingDialog={() => setIsProcessingDialogOpen(true)}
         hasActiveJobs={bgStatus?.hasActiveJobs}
       />
+
+      {runtimeHealth && (!runtimeHealth.geminiConfigured || !runtimeHealth.supabase?.connected || !runtimeHealth.supabase?.bucketsReady) && (
+        <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 pt-3">
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950 space-y-1.5">
+            <div className="font-extrabold">يوجد إعداد ناقص في بيئة الخادم</div>
+            {!runtimeHealth.geminiConfigured && <p>مفتاح Gemini غير مضبوط على الخادم؛ تحليل الذكاء الاصطناعي لن يعمل حتى ضبط GEMINI_API_KEY في أسرار الاستضافة.</p>}
+            {!runtimeHealth.supabase?.connected && <p>اتصال Supabase الإداري غير جاهز؛ تحقق من SUPABASE_SERVICE_ROLE_KEY على الخادم. لا تستخدم المفتاح العام بدلاً منه.</p>}
+            {runtimeHealth.supabase?.connected && !runtimeHealth.supabase?.bucketsReady && <p>تخزين الصور أو ملفات Excel غير مكتمل: {(runtimeHealth.supabase.missingBuckets || []).join('، ')}.</p>}
+          </div>
+        </div>
+      )}
 
       {banner && (
         <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pt-4">
