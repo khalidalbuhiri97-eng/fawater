@@ -239,6 +239,7 @@ async function startServer() {
       if (extractionController.signal.aborted || res.destroyed) return;
       res.json({ success: true, data: sanitized });
     } catch (error: any) {
+      if (extractionController.signal.aborted || res.destroyed) return;
       const errMsg = error?.message || 'حدث خطأ أثناء معالجة الفاتورة بالذكاء الاصطناعي';
       console.error('Error in /api/extract-invoice:', errMsg);
       const rawStatus =
