@@ -274,8 +274,10 @@ async function startServer() {
         return res.status(413).json({ success: false, error: 'الحد الأقصى للدفعة الواحدة 50 فاتورة.' });
       }
       for (const file of files) {
-        if (!file?.imageBase64 || typeof file.imageBase64 !== 'string') {
-          return res.status(400).json({ success: false, error: 'إحدى الفواتير لا تحتوي على ملف صالح.' });
+        const hasBase64 = typeof file?.imageBase64 === 'string' && file.imageBase64.length > 0;
+        const hasStoredPath = typeof file?.storagePath === 'string' && file.storagePath.length > 0;
+        if ((!hasBase64 && !hasStoredPath) || !file?.fileName || !file?.mimeType) {
+          return res.status(400).json({ success: false, error: 'إحدى الفواتير لا تحتوي على ملف أو بيانات تخزين صالحة.' });
         }
       }
 
