@@ -606,11 +606,11 @@ export class ServerBatchQueueManager {
 
     if (recoveredAiItems > 0) {
       console.info(`[batchQueue] Recovered ${recoveredAiItems} pending/interrupted AI invoice task(s).`);
-      void this.processAiQueue();
+      if (!process.env.VERCEL) void this.processAiQueue();
     }
     if (recoveredExportJobs > 0) {
       console.info(`[batchQueue] Recovered ${recoveredExportJobs} pending/interrupted Excel export job(s).`);
-      void this.processExportQueue();
+      if (!process.env.VERCEL) void this.processExportQueue();
     }
 
     return { recoveredAiItems, recoveredExportJobs };
@@ -819,8 +819,8 @@ export class ServerBatchQueueManager {
     }
 
     await this.persistLocalState();
-    // Trigger background worker asynchronously — HTTP caller receives 202 immediately
-    void this.processAiQueue();
+    // Vercel requests register the worker with waitUntil in the API handler; persistent servers start it here.
+    if (!process.env.VERCEL) void this.processAiQueue();
 
     return { batch, initialInvoices };
   }
@@ -868,7 +868,7 @@ export class ServerBatchQueueManager {
       batch.updatedAt = nowIso;
       await this.saveAiBatchToSupabase(batch);
       await this.persistLocalState();
-      void this.processAiQueue();
+      if (!process.env.VERCEL) void this.processAiQueue();
     }
 
     return batch;
@@ -898,6 +898,10 @@ export class ServerBatchQueueManager {
     }
 
     throw new Error('تعذر العثور على ملف الفاتورة في الخادم أو التخزين السحابي للمعالجة.');
+  }
+
+  public async processPendingQueues(): Promise<void> {
+    await Promise.all([this.processAiQueue(), this.processExportQueue()]);
   }
 
   private async claimAiJob(item: AiBatchItemState): Promise<boolean> {
@@ -1085,7 +1089,7 @@ export class ServerBatchQueueManager {
     } finally {
       this.aiWorkerRunning = false;
       if (this.aiQueue.length > 0) {
-        void this.processAiQueue();
+        await this.processAiQueue();
       }
     }
   }
@@ -1335,7 +1339,7 @@ export class ServerBatchQueueManager {
     } finally {
       this.exportWorkerRunning = false;
       if (this.exportQueue.length > 0) {
-        void this.processExportQueue();
+        await this.processExportQueue();
       }
     }
   }
