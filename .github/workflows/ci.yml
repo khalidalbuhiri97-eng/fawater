@@ -29,3 +29,5 @@ jobs:
         run: bun run lint
       - name: Production build
         run: bun run build
+      - name: Container image build
+        run: docker build -t fawater:ci .
