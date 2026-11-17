@@ -12,6 +12,7 @@ import {
   STORE_NAMES,
   writeExportTrackingToStore,
 } from './localStore';
+import { authenticatedFetch } from '../auth/supabaseClient';
 
 export async function enqueueAiBackgroundBatch(params: {
   organization: Operation;
@@ -29,7 +30,51 @@ export async function enqueueAiBackgroundBatch(params: {
   supabaseWarning?: string;
   initialInvoices: InvoiceRecord[];
 }> {
-  const res = await fetch('/api/background/ai-batches', {
+  // Ensure this local organization exists in Supabase and the first signed-in user
+  // is recorded as its owner before the server authorizes background processing.
+  const bootstrapRes = await authenticatedFetch('/api/supabase/bootstrap', { cache: 'no-store' });
+  if (bootstrapRes.ok) {
+    const bootstrap = await bootstrapRes.json().catch(() => ({}));
+    const found = (bootstrap?.data?.organizations || []).some((org: any) => org.id === params.organization.id);
+    if (!found) {
+      const createRes = await authenticatedFetch('/api/supabase/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: params.organization.id,
+          name: params.organization.name,
+          activityType: params.organization.activityType,
+          excelFileName: params.organization.excelFileName,
+        }),
+      });
+      const createData = await createRes.json().catch(() => ({}));
+      if (!createRes.ok || !createData.success) {
+        throw new Error(createData.error || `تعذر تهيئة المؤسسة قبل المعالجة (رمز ${createRes.status})`);
+      }
+    }
+  } else if (bootstrapRes.status === 403) {
+    // First organization for a new account: the server creates it and adds
+    // the current authenticated user as owner in the same route.
+    const createRes = await authenticatedFetch('/api/supabase/organizations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: params.organization.id,
+        name: params.organization.name,
+        activityType: params.organization.activityType,
+        excelFileName: params.organization.excelFileName,
+      }),
+    });
+    const createData = await createRes.json().catch(() => ({}));
+    if (!createRes.ok || !createData.success) {
+      throw new Error(createData.error || `تعذر تهيئة المؤسسة قبل المعالجة (رمز ${createRes.status})`);
+    }
+  } else {
+    const bootstrapData = await bootstrapRes.json().catch(() => ({}));
+    throw new Error(bootstrapData.error || `تعذر التحقق من عضوية المؤسسة (رمز ${bootstrapRes.status})`);
+  }
+
+  const res = await authenticatedFetch('/api/background/ai-batches', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -56,7 +101,7 @@ export async function enqueueAiBackgroundBatch(params: {
 }
 
 export async function retryBackgroundAiBatch(batchId: string): Promise<void> {
-  const res = await fetch(`/api/background/ai-batches/${encodeURIComponent(batchId)}/retry`, {
+  const res = await authenticatedFetch(`/api/background/ai-batches/${encodeURIComponent(batchId)}/retry`, {
     method: 'POST',
   });
   const data = await res.json().catch(() => ({}));
@@ -69,7 +114,7 @@ export async function enqueueBackgroundExcelExport(params: {
   organization: Operation;
   alreadyExportedIds: string[];
 }): Promise<{ jobId: string; batchId: string; fileName: string; status: string }> {
-  const res = await fetch('/api/background/exports', {
+  const res = await authenticatedFetch('/api/background/exports', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -98,7 +143,7 @@ export async function enqueueBackgroundExcelExport(params: {
 }
 
 export async function downloadBackgroundExportFile(jobId: string, fileName: string): Promise<void> {
-  const res = await fetch(`/api/background/exports/${encodeURIComponent(jobId)}/download`);
+  const res = await authenticatedFetch(`/api/background/exports/${encodeURIComponent(jobId)}/download`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || 'تعذر تنزيل ملف Excel الجاهز.');
@@ -121,7 +166,7 @@ export async function fetchBackgroundQueueStatus(
     const url = organizationId
       ? `/api/background/status?organizationId=${encodeURIComponent(organizationId)}`
       : '/api/background/status';
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await authenticatedFetch(url, { cache: 'no-store' });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.success) return null;
@@ -138,7 +183,7 @@ export async function fetchBackgroundQueueStatus(
 }
 
 export async function dismissBackgroundJob(id: string): Promise<void> {
-  await fetch(`/api/background/jobs/${encodeURIComponent(id)}/dismiss`, {
+  await authenticatedFetch(`/api/background/jobs/${encodeURIComponent(id)}/dismiss`, {
     method: 'POST',
   }).catch(() => {});
 }
