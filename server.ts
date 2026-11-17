@@ -277,7 +277,12 @@ async function startServer() {
         }
       }
 
+      const authUser = (req as any).authUser;
+      if (!authUser?.id) {
+        return res.status(401).json({ success: false, error: 'تعذر تحديد المستخدم الذي أنشأ مهمة المعالجة.' });
+      }
       const queued = await batchQueue.enqueueAiBatch({
+        createdBy: authUser.id,
         organization,
         files,
       });
