@@ -1,3 +1,4 @@
+import { authenticatedFetch } from '../auth/supabaseClient';
 import React, { useEffect, useState } from 'react';
 import {
   ChevronRight,
@@ -227,7 +228,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
     setMsg(null);
 
     try {
-      const res = await fetch('/api/extract-invoice', {
+      const res = await authenticatedFetch('/api/extract-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
