@@ -49,7 +49,7 @@ export function inspectSupabaseKeyType(rawKey?: string): {
 }
 
 export function isSupabaseConfigured(): boolean {
-  const url = (process.env.SUPABASE_URL || '').trim();
+  const url = (process.env.SUPABASE_URL || 'https://fryrlbgonkvounnarfwd.supabase.co').trim();
   const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
   return Boolean(url && key);
 }
@@ -59,7 +59,7 @@ export function isSupabaseConfigured(): boolean {
  * NEVER expose this client or key to frontend/browser code.
  */
 export function getSupabaseAdmin(): SupabaseClient | null {
-  const url = (process.env.SUPABASE_URL || '').trim();
+  const url = (process.env.SUPABASE_URL || 'https://fryrlbgonkvounnarfwd.supabase.co').trim();
   const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
   if (!url || !serviceKey) {
     return null;
