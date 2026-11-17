@@ -575,7 +575,12 @@ export class ServerBatchQueueManager {
           item.updatedAt = new Date().toISOString();
           continue;
         }
-        if (item.status === 'processing') item.status = 'pending';
+        if (item.status === 'processing') {
+          const lastLock = Date.parse(item.updatedAt || '');
+          const lockIsRecent = Number.isFinite(lastLock) && Date.now() - lastLock < 8 * 60 * 1000;
+          if (lockIsRecent) continue;
+          item.status = 'pending';
+        }
         if (!this.aiQueue.some((queued) => queued.batchId === batch.batchId && queued.invoiceId === item.invoiceId)) {
           this.aiQueue.push({ batchId: batch.batchId, invoiceId: item.invoiceId });
           recoveredAiItems++;
@@ -895,6 +900,27 @@ export class ServerBatchQueueManager {
     throw new Error('تعذر العثور على ملف الفاتورة في الخادم أو التخزين السحابي للمعالجة.');
   }
 
+  private async claimAiJob(item: AiBatchItemState): Promise<boolean> {
+    const client = getSupabaseAdmin();
+    if (!client) throw new Error('Supabase غير مهيأ؛ تعذر حجز مهمة التحليل.');
+    const now = new Date().toISOString();
+    const { data, error } = await client
+      .from('ai_processing_jobs')
+      .update({
+        status: 'processing',
+        attempts: item.attempts + 1,
+        locked_at: now,
+        started_at: now,
+        updated_at: now,
+      })
+      .eq('invoice_id', item.invoiceId)
+      .eq('status', 'pending')
+      .select('invoice_id')
+      .maybeSingle();
+    if (error) throw error;
+    return Boolean(data?.invoice_id);
+  }
+
   private async processAiQueue(): Promise<void> {
     if (this.aiWorkerRunning) return;
     this.aiWorkerRunning = true;
@@ -907,8 +933,11 @@ export class ServerBatchQueueManager {
         const item = batch.items.find((i) => i.invoiceId === next.invoiceId);
         if (!item) continue;
 
-        // Idempotency guard: never re-process completed invoices
+        // Idempotency guard: never re-process completed invoices.
+        // A conditional database update claims the pending job atomically across serverless instances.
         if (item.status === 'completed') continue;
+        const claimed = await this.claimAiJob(item);
+        if (!claimed) continue;
 
         const nowIso = new Date().toISOString();
         item.status = 'processing';
