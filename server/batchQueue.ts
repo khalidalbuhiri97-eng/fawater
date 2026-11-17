@@ -728,7 +728,7 @@ export class ServerBatchQueueManager {
         status: 'لم تبدأ',
         processingStatus: 'pending' as TaskProcessingStatus,
         hasImage: true,
-        storagePath: storagePath || undefined,
+        storagePath: undefined,
         imageFileName: f.fileName,
         imageMimeType: safeMime,
         imageFileSize: f.fileSize || buffer?.byteLength || 0,
@@ -768,7 +768,13 @@ export class ServerBatchQueueManager {
       storagePath = uploadRes.storagePath;
       initialInvoice.storagePath = storagePath;
       initialInvoice.syncStatus = 'synced';
-
+      const invoicePathSave = await this.upsertOrganizationAndInvoiceToSupabase({
+        organization: orgMeta,
+        invoice: initialInvoice,
+      });
+      if (!invoicePathSave.ok) {
+        throw new Error(invoicePathSave.warning || 'تعذر حفظ مسار صورة الفاتورة بعد رفعها.');
+      }
 
       items.push({
         invoiceId,
