@@ -251,42 +251,11 @@ async function startServer() {
     }
   });
 
-  app.post('/api/background/ai-batches', async (req, res) => {
-    try {
-      const { organization, files } = req.body || {};
-      if (!organization?.id || !UUID_REGEX.test(organization.id)) {
-        return res.status(400).json({ success: false, error: 'معرف المؤسسة UUID مطلوب.' });
-      }
-      if (!Array.isArray(files) || files.length === 0) {
-        return res.status(400).json({ success: false, error: 'يجب إرفاق ملف واحد على الأقل للمعالجة.' });
-      }
-      if (files.length > 50) {
-        return res.status(400).json({ success: false, error: 'الحد الأقصى للدفعة الواحدة هو 50 ملفاً.' });
-      }
-      for (const f of files) {
-        if (!f?.imageBase64 || typeof f.imageBase64 !== 'string') {
-          return res.status(400).json({ success: false, error: 'أحد الملفات المرفوعة غير صالح أو فارغ.' });
-        }
-      }
-
-      const { batch, initialInvoices } = await batchQueue.enqueueAiBatch({
-        organization,
-        files,
-      });
-
-      res.status(202).json({
-        success: true,
-        batchId: batch.batchId,
-        supabaseSynced: batch.supabaseSynced,
-        supabaseWarning: batch.supabaseWarning,
-        initialInvoices,
-      });
-    } catch (err: any) {
-      res.status(500).json({
-        success: false,
-        error: err?.message || 'تعذر جدولة الدفعة للمعالجة في الخلفية.',
-      });
-    }
+  app.post('/api/background/ai-batches', async (_req, res) => {
+    res.status(410).json({
+      success: false,
+      error: 'تم إيقاف التحليل في الخلفية. استخدم التحليل المباشر من صفحة رفع الفواتير.',
+    });
   });
 
   app.post('/api/background/ai-batches/:batchId/retry', async (req, res) => {
