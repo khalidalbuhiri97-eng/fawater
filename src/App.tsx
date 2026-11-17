@@ -143,7 +143,11 @@ export default function App() {
             missingOrDeniedTables: supabase.missingOrDeniedTables || [],
           },
         });
-      } catch {
+      } catch (error: any) {
+        if (error?.message?.includes('انتهت جلسة الدخول')) {
+          if (mounted) setRuntimeHealth(null);
+          return;
+        }
         if (mounted) setRuntimeHealth({
           geminiConfigured: false,
           supabase: { connected: false, bucketsReady: false, error: 'تعذر الوصول إلى خادم التطبيق.' },
