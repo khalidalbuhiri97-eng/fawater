@@ -357,11 +357,15 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
   } catch (error: any) {
     const rawStatus = Number(error?.status || error?.statusCode || error?.code);
     let errMsg = error?.message || 'حدث خطأ أثناء معالجة الفاتورة بالذكاء الاصطناعي';
+    let diagnosticStatus = rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500;
     if (rawStatus === 403 || /PERMISSION_DENIED|API key not valid|permission denied/i.test(errMsg)) {
+      diagnosticStatus = 403;
       errMsg = `رفضت Google Gemini الطلب (403). تحقق من صلاحية GEMINI_API_KEY وتفعيل Gemini API للمشروع، ولا تستخدم مفتاح Supabase مكانه. النموذج المضبوط: ${GEMINI_MODEL}.`;
     } else if (rawStatus === 404 || /model.*not found|not found.*model/i.test(errMsg)) {
+      diagnosticStatus = 404;
       errMsg = `لم يتم العثور على نموذج Gemini "${GEMINI_MODEL}". تحقق من اسم النموذج وصلاحية الوصول إليه لهذا المفتاح.`;
     } else if (rawStatus === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(errMsg)) {
+      diagnosticStatus = 429;
       errMsg = 'تم بلوغ حصة Gemini أو حد الطلبات مؤقتاً (429). سيُعاد تشغيل المهام وفق سياسة المحاولة المحدودة؛ خفّض حجم الدفعات وانتظر تجدد الحصة.';
     }
     await logAiExtraction({
@@ -371,7 +375,7 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
       processingTimeMs: Date.now() - startedAt,
     });
     if (errMsg !== error?.message) {
-      throw new ExtractionValidationError(errMsg, rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500);
+      throw new ExtractionValidationError(errMsg, diagnosticStatus);
     }
     throw error;
   }
