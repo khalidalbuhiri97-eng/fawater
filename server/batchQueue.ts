@@ -423,33 +423,25 @@ export class ServerBatchQueueManager {
     let recoveredAiItems = 0;
     let recoveredExportJobs = 0;
 
+    // Background AI extraction is disabled: never resume queued or interrupted AI work.
+    // Preserve completed invoices and mark unfinished legacy queue items as cancelled.
     for (const batch of this.state.aiBatches) {
       let batchChanged = false;
       for (const item of batch.items) {
-        if (item.status === 'completed' || item.status === 'failed') {
-          continue; // Never re-process completed or explicitly failed items on restart
+        if (item.status === 'completed' || item.status === 'failed') continue;
+        item.status = 'failed';
+        item.errorMessage = 'تم إيقاف التحليل في الخلفية. أعد تحليل الفاتورة من صفحة الرفع أثناء بقائك فيها.';
+        item.updatedAt = new Date().toISOString();
+        if (item.invoiceRecord) {
+          item.invoiceRecord.status = 'فشل';
+          item.invoiceRecord.processingStatus = 'failed';
+          item.invoiceRecord.errorMessage = item.errorMessage;
         }
-        if (item.status === 'processing') {
-          // Reset interrupted in-flight job back to pending
-          item.status = 'pending';
-          item.updatedAt = new Date().toISOString();
-          if (item.invoiceRecord) {
-            item.invoiceRecord.status = 'لم تبدأ';
-            item.invoiceRecord.processingStatus = 'pending';
-          }
-          batchChanged = true;
-        }
-        const alreadyQueued = this.aiQueue.some(
-          (q) => q.batchId === batch.batchId && q.invoiceId === item.invoiceId
-        );
-        if (!alreadyQueued) {
-          this.aiQueue.push({ batchId: batch.batchId, invoiceId: item.invoiceId });
-          recoveredAiItems++;
-        }
+        batchChanged = true;
       }
       if (batchChanged) {
         batch.updatedAt = new Date().toISOString();
-        void this.saveAiBatchToSupabase(batch);
+        await this.saveAiBatchToSupabase(batch);
       }
     }
 
