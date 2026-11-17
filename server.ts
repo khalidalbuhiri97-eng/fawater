@@ -45,15 +45,12 @@ export async function createServerApp() {
   // =========================================================================
   app.get('/api/health/live', (_req, res) => res.status(200).json({ ok: true }));
 
-  app.get('/api/health', async (_req, res) => {
+  app.get('/api/health', (_req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     const geminiConfigured = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
-    const supabaseStatus = await testSupabaseConnection();
-    res.json({
-      ok: true,
-      geminiConfigured,
-      supabase: supabaseStatus,
-    });
+    res.setHeader('Cache-Control', 'no-store');
+    // Public liveness/readiness reveals no database schema, key type, or provider error details.
+    res.json({ ok: true, geminiConfigured });
   });
 
   // =========================================================================
