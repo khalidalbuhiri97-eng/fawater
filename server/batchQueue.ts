@@ -374,6 +374,34 @@ export class ServerBatchQueueManager {
     }
   }
 
+  private async registerExistingAttachmentToSupabase(params: {
+    organizationId: string;
+    invoiceId: string;
+    storagePath: string;
+    mimeType: string;
+    fileName: string;
+    fileSize: number;
+  }): Promise<{ ok: boolean; storagePath?: string; warning?: string }> {
+    const client = getSupabaseAdmin();
+    if (!client) return { ok: false, warning: 'Supabase غير مهيأ' };
+    try {
+      const { data: blob, error: downloadError } = await client.storage.from('invoice-images').download(params.storagePath);
+      if (downloadError || !blob) return { ok: false, warning: downloadError?.message || 'الصورة غير موجودة في Storage.' };
+      if (blob.size <= 0 || blob.size > 15 * 1024 * 1024) return { ok: false, warning: 'حجم الصورة المخزنة غير صالح.' };
+      const { error } = await client.from('invoice_attachments').upsert({
+        invoice_id: params.invoiceId,
+        storage_path: params.storagePath,
+        file_name: params.fileName,
+        mime_type: params.mimeType,
+        file_size: blob.size || params.fileSize,
+      }, { onConflict: 'invoice_id,storage_path' });
+      if (error) return { ok: false, warning: error.message };
+      return { ok: true, storagePath: params.storagePath };
+    } catch (err: any) {
+      return { ok: false, warning: err?.message || 'فشل تسجيل مرفق الفاتورة.' };
+    }
+  }
+
   /**
    * Restores pending and interrupted processing jobs after server restart
    * WITHOUT duplicating already-completed invoices.
@@ -594,7 +622,8 @@ export class ServerBatchQueueManager {
     };
     files: Array<{
       invoiceId?: string;
-      imageBase64: string;
+      imageBase64?: string;
+      storagePath?: string;
       mimeType?: string;
       fileName: string;
       fileSize?: number;
@@ -626,12 +655,9 @@ export class ServerBatchQueueManager {
     for (const f of params.files) {
       const invoiceId = f.invoiceId && UUID_REGEX.test(f.invoiceId) ? f.invoiceId : crypto.randomUUID();
       const safeMime = normalizeMimeType(f.mimeType, f.fileName);
-      const cleanBase64 = stripDataUrlPrefix(f.imageBase64);
-      const buf = Buffer.from(cleanBase64, 'base64');
-
-      // Store image buffer on server disk for durable restart recovery even without browser open
-      const relPath = `${invoiceId}.bin`;
-      await fs.writeFile(path.join(UPLOADS_DIR, relPath), buf);
+      if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(safeMime)) {
+        throw new Error(`نوع الملف "${f.fileName}" غير مدعوم.`);
+      }
 
       const manualChoice =
         f.manualDocumentType === 'مبيعات' || f.manualDocumentType === 'مشتريات'
@@ -641,6 +667,37 @@ export class ServerBatchQueueManager {
         manualChoice === 'مبيعات' || manualChoice === 'مشتريات'
           ? manualChoice
           : 'يحتاج تحديد النوع';
+
+      let storagePath = String(f.storagePath || '').trim();
+      let buffer: Buffer | undefined;
+      let relPath: string | undefined;
+
+      if (storagePath) {
+        const safeName = (f.fileName || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_') || 'invoice';
+        const expectedPath = `${orgId}/${invoiceId}/${safeName}`;
+        if (storagePath !== expectedPath) {
+          throw new Error('مسار الصورة لا يطابق المؤسسة والفاتورة المحددتين.');
+        }
+        const storageClient = getSupabaseAdmin();
+        if (!storageClient) throw new Error('اتصال Supabase الإداري غير مهيأ.');
+        const { data: storedBlob, error: storedError } = await storageClient.storage
+          .from('invoice-images')
+          .download(storagePath);
+        if (storedError || !storedBlob) throw new Error(storedError?.message || 'الصورة المرفوعة غير موجودة في التخزين الآمن.');
+        if (storedBlob.size <= 0 || storedBlob.size > 15 * 1024 * 1024) {
+          throw new Error('حجم الصورة المخزنة غير صالح أو يتجاوز 15 ميغابايت.');
+        }
+      } else if (f.imageBase64) {
+        const cleanBase64 = stripDataUrlPrefix(f.imageBase64);
+        buffer = Buffer.from(cleanBase64, 'base64');
+        if (buffer.byteLength <= 0 || buffer.byteLength > 15 * 1024 * 1024) {
+          throw new Error('حجم ملف الفاتورة غير صالح أو يتجاوز 15 ميغابايت.');
+        }
+        relPath = `${invoiceId}.bin`;
+        await fs.writeFile(path.join(UPLOADS_DIR, relPath), buffer);
+      } else {
+        throw new Error(`لم يتم رفع ملف الفاتورة "${f.fileName}" إلى التخزين.`);
+      }
 
       const initialInvoice = {
         id: invoiceId,
@@ -666,10 +723,10 @@ export class ServerBatchQueueManager {
         status: 'لم تبدأ',
         processingStatus: 'pending' as TaskProcessingStatus,
         hasImage: true,
-        storagePath: undefined as string | undefined,
+        storagePath: storagePath || undefined,
         imageFileName: f.fileName,
         imageMimeType: safeMime,
-        imageFileSize: f.fileSize || buf.byteLength,
+        imageFileSize: f.fileSize || buffer?.byteLength || 0,
         syncStatus: 'pending',
         createdAt: nowIso.split('T')[0],
         updatedAt: nowIso,
@@ -679,33 +736,44 @@ export class ServerBatchQueueManager {
         organization: orgMeta,
         invoice: initialInvoice,
       });
-      if (!invSaveRes.ok) {
-        throw new Error(invSaveRes.warning || 'تعذر إنشاء سجل الفاتورة في Supabase قبل رفع المرفق.');
-      }
+      if (!invSaveRes.ok) throw new Error(invSaveRes.warning || 'تعذر إنشاء سجل الفاتورة في Supabase.');
 
-      // The invoice row must exist before inserting its attachment metadata (FK invoice_id).
-      const uploadRes = await this.uploadAttachmentToSupabase({
-        organizationId: orgId,
-        invoiceId,
-        buffer: buf,
-        mimeType: safeMime,
-        fileName: f.fileName,
-      });
-      if (!uploadRes.ok || !uploadRes.storagePath) {
-        throw new Error(uploadRes.warning || 'تعذر رفع صورة الفاتورة إلى Supabase Storage. لم تتم جدولة التحليل.');
+      let uploadRes: { ok: boolean; storagePath?: string; warning?: string };
+      if (storagePath) {
+        uploadRes = await this.registerExistingAttachmentToSupabase({
+          organizationId: orgId,
+          invoiceId,
+          storagePath,
+          mimeType: safeMime,
+          fileName: f.fileName,
+          fileSize: f.fileSize || 0,
+        });
+      } else {
+        uploadRes = await this.uploadAttachmentToSupabase({
+          organizationId: orgId,
+          invoiceId,
+          buffer: buffer!,
+          mimeType: safeMime,
+          fileName: f.fileName,
+        });
       }
-      initialInvoice.storagePath = uploadRes.storagePath;
+      if (!uploadRes.ok || !uploadRes.storagePath) {
+        throw new Error(uploadRes.warning || 'تعذر تسجيل صورة الفاتورة في Supabase Storage.');
+      }
+      storagePath = uploadRes.storagePath;
+      initialInvoice.storagePath = storagePath;
       initialInvoice.syncStatus = 'synced';
+
 
       items.push({
         invoiceId,
         fileName: f.fileName,
         mimeType: safeMime,
-        fileSize: f.fileSize || buf.byteLength,
+        fileSize: f.fileSize || buffer?.byteLength || 0,
         manualDocumentType: manualChoice,
         status: 'pending',
         attempts: 0,
-        storagePath: uploadRes.storagePath,
+        storagePath,
         uploadRelPath: relPath,
         invoiceRecord: initialInvoice,
         updatedAt: nowIso,
