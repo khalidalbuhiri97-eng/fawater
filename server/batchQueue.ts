@@ -901,12 +901,14 @@ export class ServerBatchQueueManager {
   }
 
   public async processPendingQueues(maxAiJobs = process.env.VERCEL ? 5 : Number.POSITIVE_INFINITY): Promise<void> {
+    const aiWorkerAlreadyRunning = this.aiWorkerRunning;
+    const exportWorkerAlreadyRunning = this.exportWorkerRunning;
     await Promise.all([this.processAiQueue(maxAiJobs), this.processExportQueue()]);
 
     // Vercel background functions have a finite execution window. Chain a fresh
     // invocation while durable jobs remain so large batches continue after the
     // original upload request and after the user closes the page.
-    if (process.env.VERCEL && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
+    if (process.env.VERCEL && !aiWorkerAlreadyRunning && !exportWorkerAlreadyRunning && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
       const configuredAppUrl = process.env.APP_URL?.trim();
       const baseUrl = (configuredAppUrl?.startsWith('https://') || configuredAppUrl?.startsWith('http://')
         ? configuredAppUrl
