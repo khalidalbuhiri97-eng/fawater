@@ -19,7 +19,7 @@ import {
 import { InvoiceRecord, Operation } from '../types';
 import { saveInvoiceImage } from '../services/dbService';
 import { generateUuid } from '../services/localStore';
-import { enqueueAiBackgroundBatch } from '../services/backgroundQueueClient';
+import { authenticatedFetch } from '../auth/supabaseClient';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -327,59 +327,163 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setSelectedFiles((prev) => [...prev, ...files.map((file) => ({ file, classification: aiDefaultClassification }))]);
     e.target.value = '';
   };
-  const handleStartAiExtraction = async () => {
-    if (selectedFiles.length === 0) return;
+  const extractionAbortRef = useRef<AbortController | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) extractionAbortRef.current?.abort();
+    return () => extractionAbortRef.current?.abort();
+  }, [isOpen]);
+
+  const handleStartAiExtraction = async () => {
+    if (selectedFiles.length === 0 || extracting) return;
+
+    const controller = new AbortController();
+    extractionAbortRef.current = controller;
     setExtracting(true);
-    setUploadProgress(3);
-    setUploadProgressLabel('تهيئة الفواتير ورفعها بأمان...');
+    setUploadProgress(0);
+    setUploadProgressLabel('بدء تحليل الفواتير مباشرة...');
     setErrorMsg('');
 
+    const completedInvoices: InvoiceRecord[] = [];
+    const failures: string[] = [];
+
     try {
-      const allInitialInvoices: InvoiceRecord[] = [];
-      let processedCount = 0;
-      // Sequential chunks keep each JSON request below the server's 50 MB limit.
-      // Files are encoded only while their chunk is being submitted.
-      while (processedCount < selectedFiles.length) {
-        const chunk: typeof selectedFiles = [];
-        let chunkBytes = 0;
-        while (processedCount + chunk.length < selectedFiles.length && chunk.length < 5) {
-          const candidate = selectedFiles[processedCount + chunk.length];
-          if (chunk.length > 0 && chunkBytes + candidate.file.size > 24 * 1024 * 1024) break;
-          if (candidate.file.size > 30 * 1024 * 1024) throw new Error(`الملف "${candidate.file.name}" كبير جداً. يرجى ضغطه إلى أقل من 30 ميغابايت.`);
-          chunk.push(candidate);
-          chunkBytes += candidate.file.size;
-        }
-        const preparedFiles: Array<{ invoiceId: string; imageBase64: string; mimeType: string; fileName: string; fileSize: number; manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات' }> = [];
-        for (const item of chunk) {
-          const invId = generateUuid();
+      for (let index = 0; index < selectedFiles.length; index++) {
+        if (controller.signal.aborted) break;
+        const item = selectedFiles[index];
+        const invoiceId = generateUuid();
+        setUploadProgress(Math.round((index / selectedFiles.length) * 100));
+        setUploadProgressLabel(`جارٍ تحليل الفاتورة ${index + 1} من ${selectedFiles.length}: ${item.file.name}`);
+
+        try {
+          if (item.file.size > 15 * 1024 * 1024) {
+            throw new Error('حجم الملف يتجاوز 15 ميغابايت.');
+          }
+          const imageBase64 = await fileToBase64(item.file);
+          if (controller.signal.aborted) break;
           const mimeType = item.file.type || 'image/jpeg';
-          const base64 = await fileToBase64(item.file);
-          try { await saveInvoiceImage(invId, base64, mimeType, { organizationId: operation.id, fileName: item.file.name, fileSize: item.file.size, enqueueSync: false }); }
-          catch (err) { console.error('IndexedDB save image error:', err); }
-          preparedFiles.push({ invoiceId: invId, imageBase64: base64, mimeType, fileName: item.file.name, fileSize: item.file.size, manualDocumentType: item.classification });
+
+          const response = await authenticatedFetch('/api/extract-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              invoiceId,
+              imageBase64,
+              mimeType,
+              fileName: item.file.name,
+              customFields: operation.customFields,
+              organizationName: operation.name,
+              activityType: operation.activityType,
+              manualDocumentType: item.classification,
+            }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok || !result.success || !result.data) {
+            throw new Error(result.error || `فشل التحليل (HTTP ${response.status})`);
+          }
+
+          const ext = result.data;
+          const numeric = (value: any) => {
+            if (value === null || value === undefined || value === '') return undefined;
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : undefined;
+          };
+          const now = new Date().toISOString();
+          try {
+            await saveInvoiceImage(invoiceId, imageBase64, mimeType, {
+              organizationId: operation.id,
+              fileName: item.file.name,
+              fileSize: item.file.size,
+              enqueueSync: true,
+            });
+          } catch (imageError) {
+            console.error('Could not save invoice image locally:', imageError);
+          }
+
+          completedInvoices.push({
+            id: invoiceId,
+            organizationId: operation.id,
+            invoiceNumber: ext.invoiceNumber || '',
+            invoiceDate: ext.invoiceDate || '',
+            day: ext.day || '',
+            documentType: ext.documentType || 'يحتاج تحديد النوع',
+            entryMethod: 'ai',
+            issuerName: ext.issuerName || '',
+            clientName: ext.clientName || '',
+            issuerTaxId: ext.issuerTaxId || '',
+            clientTaxId: ext.clientTaxId || '',
+            currency: ext.currency || '',
+            subtotal: numeric(ext.subtotal),
+            taxAmount: numeric(ext.taxAmount),
+            taxRate: numeric(ext.taxRate),
+            discount: numeric(ext.discount),
+            grandTotal: numeric(ext.grandTotal),
+            cashSales: numeric(ext.cashSales),
+            networkSales: numeric(ext.networkSales),
+            notes: ext.notes || '',
+            items: Array.isArray(ext.items) ? ext.items.map((entry: any) => ({
+              id: generateUuid(),
+              name: String(entry?.name || ''),
+              code: entry?.code ? String(entry.code) : undefined,
+              quantity: numeric(entry?.quantity),
+              unit: entry?.unit ? String(entry.unit) : undefined,
+              unitPrice: numeric(entry?.unitPrice),
+              discount: numeric(entry?.discount),
+              tax: numeric(entry?.tax),
+              total: numeric(entry?.total),
+            })) : [],
+            customFieldsValues: {
+              ...(ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object' ? ext.customFieldsExtracted : {}),
+              ...(ext.paymentMethod ? { __official_payment_method: ext.paymentMethod } : {}),
+            },
+            classificationReason: ext.classificationReason || '',
+            status: 'تحتاج مراجعة',
+            processingStatus: 'completed',
+            hasImage: true,
+            imageMimeType: mimeType,
+            imageFileName: item.file.name,
+            imageFileSize: item.file.size,
+            syncStatus: 'pending',
+            createdAt: now,
+            updatedAt: now,
+          });
+        } catch (error: any) {
+          if (controller.signal.aborted || error?.name === 'AbortError') break;
+          failures.push(`${item.file.name}: ${error?.message || 'تعذر التحليل'}`);
         }
-        setUploadProgress(Math.min(88, Math.round(5 + ((processedCount + chunk.length) / selectedFiles.length) * 80)));
-        setUploadProgressLabel(`تم تجهيز ${processedCount + chunk.length} من ${selectedFiles.length} صورة`);
-        const queued = await enqueueAiBackgroundBatch({ organization: operation, files: preparedFiles });
-        allInitialInvoices.push(...queued.initialInvoices);
-        onBackgroundBatchQueued?.(queued.batchId);
-        processedCount += chunk.length;
       }
-      setUploadProgress(96);
-      setUploadProgressLabel('حفظ الفواتير المجدولة...');
-      const nowIso = new Date().toISOString();
-      onUpdateOperation({ ...operation, invoices: [...allInitialInvoices, ...(operation.invoices || [])], updatedAt: nowIso });
-      setUploadProgress(100);
-      setUploadProgressLabel(`تمت جدولة ${allInitialInvoices.length} صورة بنجاح`);
-      setSelectedFiles([]);
-      onClose();
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'تعذر بدء المعالجة في الخلفية.');
+
+      if (completedInvoices.length > 0) {
+        const now = new Date().toISOString();
+        onUpdateOperation({
+          ...operation,
+          invoices: [...completedInvoices, ...(operation.invoices || [])],
+          updatedAt: now,
+        });
+      }
+
+      if (controller.signal.aborted) {
+        setUploadProgressLabel(`توقف التحليل عند مغادرة الصفحة. تم حفظ ${completedInvoices.length} فاتورة مكتملة.`);
+        setSelectedFiles(selectedFiles.slice(completedInvoices.length));
+      } else if (failures.length > 0) {
+        setErrorMsg(`تم تحليل ${completedInvoices.length} فاتورة، وتعذر تحليل ${failures.length}: ${failures.slice(0, 3).join(' | ')}`);
+        setSelectedFiles([]);
+      } else {
+        setUploadProgress(100);
+        setUploadProgressLabel(`اكتمل تحليل وحفظ ${completedInvoices.length} فاتورة.`);
+        setSelectedFiles([]);
+        onClose();
+      }
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') setErrorMsg(error?.message || 'تعذر تحليل الفواتير.');
     } finally {
+      if (extractionAbortRef.current === controller) extractionAbortRef.current = null;
       setExtracting(false);
-      setUploadProgress(0);
-      setUploadProgressLabel('تهيئة الملفات للرفع...');
+      if (!controller.signal.aborted) {
+        setUploadProgress(0);
+        setUploadProgressLabel('بدء تحليل الفواتير مباشرة...');
+      }
     }
   };
 
@@ -402,7 +506,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            disabled={extracting || savingManual}
+            disabled={savingManual}
             className="text-slate-400 hover:text-white transition p-1 rounded-lg hover:bg-slate-800 disabled:opacity-50"
           >
             <X className="w-5 h-5" />
