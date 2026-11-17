@@ -21,6 +21,7 @@ import {
   writeExportTrackingToStore,
   readExportTrackingFromStore,
 } from './localStore';
+import { authenticatedFetch } from '../auth/supabaseClient';
 
 const SYNC_ORDER: Record<SyncEntityType, number> = {
   template: 1,
@@ -173,7 +174,7 @@ export async function checkSupabaseServerStatus(): Promise<{
   }
 
   try {
-    const res = await fetch('/api/supabase/status', { cache: 'no-store' });
+    const res = await authenticatedFetch('/api/supabase/status', { cache: 'no-store' });
     const data = await res.json().catch(() => ({}));
     const configured = Boolean(data?.configured);
     const connected = Boolean(res.ok && data?.connected && data?.bucketsReady);
@@ -231,7 +232,7 @@ async function updateEntitySyncStatusLocally(
 async function executeQueueItem(item: SyncQueueItem): Promise<void> {
   switch (item.entityType) {
     case 'template': {
-      const res = await fetch('/api/supabase/templates', {
+      const res = await authenticatedFetch('/api/supabase/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(item.payload),
@@ -242,7 +243,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
     }
     case 'organization': {
       const org = (await idbGet<Operation>(STORE_NAMES.ORGANIZATIONS, item.entityId)) || item.payload;
-      const res = await fetch('/api/supabase/organizations', {
+      const res = await authenticatedFetch('/api/supabase/organizations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -259,7 +260,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       break;
     }
     case 'custom_field': {
-      const res = await fetch('/api/supabase/custom-fields', {
+      const res = await authenticatedFetch('/api/supabase/custom-fields', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -272,7 +273,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       break;
     }
     case 'delete_custom_field': {
-      const res = await fetch(`/api/supabase/custom-fields/${encodeURIComponent(item.entityId)}`, {
+      const res = await authenticatedFetch(`/api/supabase/custom-fields/${encodeURIComponent(item.entityId)}`, {
         method: 'DELETE',
       });
       const data = await res.json().catch(() => ({}));
@@ -284,7 +285,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       const latestInvoice =
         org?.invoices?.find((inv) => inv.id === item.entityId) || (item.payload.invoice as InvoiceRecord);
       const orgMeta = org || item.payload.organization;
-      const res = await fetch('/api/supabase/invoices', {
+      const res = await authenticatedFetch('/api/supabase/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -306,7 +307,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       const img = await idbGet<any>(STORE_NAMES.INVOICE_IMAGES, item.entityId);
       const imageBase64 = img?.imageBase64 || item.payload?.imageBase64;
       if (!imageBase64) return;
-      const res = await fetch('/api/supabase/attachments', {
+      const res = await authenticatedFetch('/api/supabase/attachments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -334,7 +335,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       const batch = item.payload as ExportBatchRecord;
       const fileRec = await getExportFileFromStore(batch.id);
       const xlsxBase64 = fileRec?.buffer ? arrayBufferToBase64(fileRec.buffer) : undefined;
-      const res = await fetch('/api/supabase/exports', {
+      const res = await authenticatedFetch('/api/supabase/exports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -354,7 +355,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       break;
     }
     case 'delete_invoice': {
-      const res = await fetch(`/api/supabase/invoices/${encodeURIComponent(item.entityId)}`, {
+      const res = await authenticatedFetch(`/api/supabase/invoices/${encodeURIComponent(item.entityId)}`, {
         method: 'DELETE',
       });
       const data = await res.json().catch(() => ({}));
@@ -362,7 +363,7 @@ async function executeQueueItem(item: SyncQueueItem): Promise<void> {
       break;
     }
     case 'delete_organization': {
-      const res = await fetch(
+      const res = await authenticatedFetch(
         `/api/supabase/organizations/${encodeURIComponent(item.entityId)}?confirm=true`,
         { method: 'DELETE' }
       );
@@ -458,7 +459,7 @@ export async function pullFromSupabaseAndMerge(): Promise<boolean> {
   if (!status.configured || !status.connected) return false;
 
   try {
-    const res = await fetch('/api/supabase/bootstrap', { cache: 'no-store' });
+    const res = await authenticatedFetch('/api/supabase/bootstrap', { cache: 'no-store' });
     if (!res.ok) return false;
     const json = await res.json();
     if (!json.success || !json.data) return false;
