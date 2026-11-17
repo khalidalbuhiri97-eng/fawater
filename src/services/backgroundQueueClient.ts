@@ -12,26 +12,25 @@ import {
   STORE_NAMES,
   writeExportTrackingToStore,
 } from './localStore';
-import { authenticatedFetch } from '../auth/supabaseClient';
+import { authenticatedFetch, getSupabaseBrowserClient } from '../auth/supabaseClient';
 
 export async function enqueueAiBackgroundBatch(params: {
   organization: Operation;
   files: Array<{
     invoiceId: string;
-    imageBase64: string;
+    file: File;
     mimeType: string;
     fileName: string;
     fileSize: number;
     manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
   }>;
+  onProgress?: (completed: number, total: number, fileName: string) => void;
 }): Promise<{
   batchId: string;
   supabaseSynced: boolean;
   supabaseWarning?: string;
   initialInvoices: InvoiceRecord[];
 }> {
-  // Ensure this local organization exists in Supabase and the first signed-in user
-  // is recorded as its owner before the server authorizes background processing.
   const bootstrapRes = await authenticatedFetch('/api/supabase/bootstrap', { cache: 'no-store' });
   if (bootstrapRes.ok) {
     const bootstrap = await bootstrapRes.json().catch(() => ({}));
@@ -40,38 +39,42 @@ export async function enqueueAiBackgroundBatch(params: {
       const createRes = await authenticatedFetch('/api/supabase/organizations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: params.organization.id,
-          name: params.organization.name,
-          activityType: params.organization.activityType,
-          excelFileName: params.organization.excelFileName,
-        }),
+        body: JSON.stringify({ id: params.organization.id, name: params.organization.name, activityType: params.organization.activityType, excelFileName: params.organization.excelFileName }),
       });
       const createData = await createRes.json().catch(() => ({}));
-      if (!createRes.ok || !createData.success) {
-        throw new Error(createData.error || `تعذر تهيئة المؤسسة قبل المعالجة (رمز ${createRes.status})`);
-      }
+      if (!createRes.ok || !createData.success) throw new Error(createData.error || `تعذر تهيئة المؤسسة (رمز ${createRes.status})`);
     }
   } else if (bootstrapRes.status === 403) {
-    // First organization for a new account: the server creates it and adds
-    // the current authenticated user as owner in the same route.
     const createRes = await authenticatedFetch('/api/supabase/organizations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: params.organization.id,
-        name: params.organization.name,
-        activityType: params.organization.activityType,
-        excelFileName: params.organization.excelFileName,
-      }),
+      body: JSON.stringify({ id: params.organization.id, name: params.organization.name, activityType: params.organization.activityType, excelFileName: params.organization.excelFileName }),
     });
     const createData = await createRes.json().catch(() => ({}));
-    if (!createRes.ok || !createData.success) {
-      throw new Error(createData.error || `تعذر تهيئة المؤسسة قبل المعالجة (رمز ${createRes.status})`);
-    }
+    if (!createRes.ok || !createData.success) throw new Error(createData.error || `تعذر تهيئة المؤسسة (رمز ${createRes.status})`);
   } else {
     const bootstrapData = await bootstrapRes.json().catch(() => ({}));
     throw new Error(bootstrapData.error || `تعذر التحقق من عضوية المؤسسة (رمز ${bootstrapRes.status})`);
+  }
+
+  const storage = getSupabaseBrowserClient().storage.from('invoice-images');
+  const uploadedFiles: Array<{
+    invoiceId: string; storagePath: string; mimeType: string; fileName: string; fileSize: number;
+    manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
+  }> = [];
+
+  for (let index = 0; index < params.files.length; index++) {
+    const item = params.files[index];
+    if (item.fileSize <= 0 || item.fileSize > 15 * 1024 * 1024) throw new Error(`حجم الملف "${item.fileName}" غير صالح أو يتجاوز 15 ميغابايت.`);
+    const safeName = item.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'invoice';
+    const storagePath = `${params.organization.id}/${item.invoiceId}/${safeName}`;
+    const { error } = await storage.upload(storagePath, item.file, { contentType: item.mimeType, upsert: false });
+    if (error) throw new Error(`تعذر رفع "${item.fileName}" إلى التخزين الآمن: ${error.message}`);
+    uploadedFiles.push({
+      invoiceId: item.invoiceId, storagePath, mimeType: item.mimeType, fileName: item.fileName,
+      fileSize: item.fileSize, manualDocumentType: item.manualDocumentType,
+    });
+    params.onProgress?.(index + 1, params.files.length, item.fileName);
   }
 
   const res = await authenticatedFetch('/api/background/ai-batches', {
@@ -79,24 +82,17 @@ export async function enqueueAiBackgroundBatch(params: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       organization: {
-        id: params.organization.id,
-        name: params.organization.name,
-        activityType: params.organization.activityType,
-        excelFileName: params.organization.excelFileName,
-        customFields: params.organization.customFields || [],
+        id: params.organization.id, name: params.organization.name, activityType: params.organization.activityType,
+        excelFileName: params.organization.excelFileName, customFields: params.organization.customFields || [],
       },
-      files: params.files,
+      files: uploadedFiles,
     }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || `تعذر إرسال الدفعة للمعالجة في الخلفية (رمز ${res.status})`);
-  }
+  if (!res.ok || !data.success) throw new Error(data.error || `تعذر جدولة التحليل (رمز ${res.status})`);
   return {
-    batchId: data.batchId,
-    supabaseSynced: Boolean(data.supabaseSynced),
-    supabaseWarning: data.supabaseWarning,
-    initialInvoices: Array.isArray(data.initialInvoices) ? data.initialInvoices : [],
+    batchId: data.batchId, supabaseSynced: Boolean(data.supabaseSynced),
+    supabaseWarning: data.supabaseWarning, initialInvoices: Array.isArray(data.initialInvoices) ? data.initialInvoices : [],
   };
 }
 
