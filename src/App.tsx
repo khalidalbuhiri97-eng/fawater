@@ -41,7 +41,7 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
   const [syncOverview, setSyncOverview] = useState<SyncOverview | undefined>(undefined);
   const [bgStatus, setBgStatus] = useState<BackgroundQueueStatus | null>(null);
-  const [runtimeHealth, setRuntimeHealth] = useState<{ geminiConfigured: boolean; supabase?: { connected: boolean; bucketsReady: boolean; error?: string; missingBuckets?: string[] } } | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<{ geminiConfigured: boolean; supabase?: { connected: boolean; bucketsReady: boolean; error?: string; missingBuckets?: string[]; missingOrDeniedTables?: string[] } } | null>(null);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const [isProcessingDialogOpen, setIsProcessingDialogOpen] = useState(false);
   const [currentView, setCurrentView] = useState<'home' | 'dashboard' | 'review'>('home');
