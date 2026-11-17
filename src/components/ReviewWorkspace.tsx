@@ -233,7 +233,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           invoiceId: currentInvoice.id,
-          imageBase64: activeImg.base64,
+          organizationId: operation.id,
+          ...(currentInvoice.storagePath ? { storagePath: currentInvoice.storagePath } : { imageBase64: activeImg.base64 }),
           mimeType: activeImg.mimeType || 'image/jpeg',
           fileName: currentInvoice.imageFileName,
           customFields: operation.customFields,
