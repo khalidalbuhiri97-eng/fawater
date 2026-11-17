@@ -89,7 +89,7 @@ export async function createServerApp() {
       (req as any).authUser = authData.user;
 
       // Publicly-created accounts can access the app shell but not tenant data.
-      if (req.path === '/health' || req.path === '/supabase/status' || req.path === '/extract-invoice') {
+      if (req.path === '/health' || req.path === '/supabase/status') {
         return next();
       }
 
@@ -208,6 +208,9 @@ export async function createServerApp() {
 
       const role = roles.get(organizationId);
       const isOwnerAdmin = role === 'owner' || role === 'admin';
+      if (req.path === '/extract-invoice' && !['owner','admin','accountant','sales','employee'].includes(role as string)) {
+        return res.status(403).json({ success: false, error: 'ليس لديك صلاحية تحليل فواتير هذه المؤسسة.' });
+      }
       const staffRoles = ['owner','admin','accountant','sales','employee'];
       if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && role !== 'owner') {
         return res.status(403).json({ success: false, error: 'حذف المؤسسة متاح للمالك فقط.' });
@@ -246,7 +249,34 @@ export async function createServerApp() {
     req.on('aborted', cancelOnDisconnect);
     res.on('close', cancelOnDisconnect);
     try {
-      const sanitized = await extractInvoiceWithGemini(req.body || {}, extractionController.signal);
+      const input = { ...(req.body || {}) };
+      if (!UUID_REGEX.test(input.organizationId || '') || !UUID_REGEX.test(input.invoiceId || '')) {
+        return res.status(400).json({ success: false, error: 'معرف المؤسسة والفاتورة مطلوبان لتحليل المستند.' });
+      }
+      if (input.storagePath) {
+        const expectedPrefix = `${input.organizationId}/${input.invoiceId}/`;
+        if (typeof input.storagePath !== 'string' || !input.storagePath.startsWith(expectedPrefix)) {
+          return res.status(403).json({ success: false, error: 'مسار الصورة لا يتبع هذه الفاتورة والمؤسسة.' });
+        }
+        const client = requireSupabaseOr503(res);
+        if (!client) return;
+        const { data: invoiceRow, error: invoiceError } = await client
+          .from('invoices').select('organization_id').eq('id', input.invoiceId).maybeSingle();
+        if (invoiceError) throw invoiceError;
+        if (!invoiceRow || invoiceRow.organization_id !== input.organizationId) {
+          return res.status(404).json({ success: false, error: 'لم يتم العثور على الفاتورة ضمن المؤسسة المحددة.' });
+        }
+        const { data: blob, error: downloadError } = await client.storage.from('invoice-images').download(input.storagePath);
+        if (downloadError || !blob) {
+          return res.status(404).json({ success: false, error: downloadError?.message || 'صورة الفاتورة غير موجودة في التخزين.' });
+        }
+        input.imageBase64 = Buffer.from(await blob.arrayBuffer()).toString('base64');
+        input.mimeType = blob.type || input.mimeType || 'image/jpeg';
+      }
+      if (!input.imageBase64) {
+        return res.status(400).json({ success: false, error: 'صورة الفاتورة مطلوبة للتحليل.' });
+      }
+      const sanitized = await extractInvoiceWithGemini(input, extractionController.signal);
       if (extractionController.signal.aborted || res.destroyed) return;
       res.json({ success: true, data: sanitized });
     } catch (error: any) {
@@ -263,10 +293,7 @@ export async function createServerApp() {
           : isRetryableGeminiError(error)
           ? 503
           : 500;
-      res.status(status).json({
-        success: false,
-        error: errMsg,
-      });
+      res.status(status).json({ success: false, error: errMsg });
     }
   });
 
