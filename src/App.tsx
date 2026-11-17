@@ -314,7 +314,7 @@ export default function App() {
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950 space-y-1.5">
             <div className="font-extrabold">يوجد إعداد ناقص في بيئة الخادم</div>
             {!runtimeHealth.geminiConfigured && <p>مفتاح Gemini غير مضبوط على الخادم؛ تحليل الذكاء الاصطناعي لن يعمل حتى ضبط GEMINI_API_KEY في أسرار الاستضافة.</p>}
-            {!runtimeHealth.supabase?.connected && <p>اتصال Supabase الإداري غير جاهز؛ تحقق من SUPABASE_SERVICE_ROLE_KEY على الخادم. لا تستخدم المفتاح العام بدلاً منه.</p>}
+            {!runtimeHealth.supabase?.connected && <p>اتصال Supabase الإداري غير جاهز؛ تحقق من SUPABASE_SERVICE_ROLE_KEY على الخادم. لا تستخدم المفتاح العام بدلاً منه. {runtimeHealth.supabase?.error || ''}</p>}
             {runtimeHealth.supabase?.connected && !runtimeHealth.supabase?.bucketsReady && <p>تخزين الصور أو ملفات Excel غير مكتمل: {(runtimeHealth.supabase.missingBuckets || []).join('، ')}.</p>}
           </div>
         </div>
