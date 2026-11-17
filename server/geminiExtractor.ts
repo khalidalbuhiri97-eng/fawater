@@ -152,7 +152,8 @@ export class ExtractionValidationError extends Error {
 }
 
 export async function extractInvoiceWithGemini(
-  input: ExtractInvoiceInput
+  input: ExtractInvoiceInput,
+  abortSignal?: AbortSignal
 ): Promise<ExtractedInvoiceData> {
   const startedAt = Date.now();
   const {
@@ -264,6 +265,7 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
             },
             config: {
               responseMimeType: 'application/json',
+              ...(abortSignal ? { abortSignal } : {}),
             },
           }),
           45000,
