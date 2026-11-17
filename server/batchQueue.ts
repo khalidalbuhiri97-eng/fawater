@@ -900,8 +900,29 @@ export class ServerBatchQueueManager {
     throw new Error('تعذر العثور على ملف الفاتورة في الخادم أو التخزين السحابي للمعالجة.');
   }
 
-  public async processPendingQueues(): Promise<void> {
-    await Promise.all([this.processAiQueue(), this.processExportQueue()]);
+  public async processPendingQueues(maxAiJobs = process.env.VERCEL ? 5 : Number.POSITIVE_INFINITY): Promise<void> {
+    await Promise.all([this.processAiQueue(maxAiJobs), this.processExportQueue()]);
+
+    // Vercel background functions have a finite execution window. Chain a fresh
+    // invocation while durable jobs remain so large batches continue after the
+    // original upload request and after the user closes the page.
+    if (process.env.VERCEL && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
+      const baseUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (baseUrl && serviceKey) {
+        try {
+          await fetch(`${baseUrl}/api/background/worker`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+            body: '{}',
+          });
+        } catch (error: any) {
+          console.error('[batchQueue] Could not schedule the next Vercel worker invocation:', error?.message || error);
+        }
+      } else {
+        console.error('[batchQueue] VERCEL_URL/APP_URL or SUPABASE_SERVICE_ROLE_KEY is missing; remaining background jobs will resume on the next API request.');
+      }
+    }
   }
 
   private async claimAiJob(item: AiBatchItemState): Promise<boolean> {
@@ -925,12 +946,13 @@ export class ServerBatchQueueManager {
     return Boolean(data?.invoice_id);
   }
 
-  private async processAiQueue(): Promise<void> {
+  private async processAiQueue(maxJobs = Number.POSITIVE_INFINITY): Promise<void> {
     if (this.aiWorkerRunning) return;
     this.aiWorkerRunning = true;
 
+    let processedCount = 0;
     try {
-      while (this.aiQueue.length > 0) {
+      while (this.aiQueue.length > 0 && processedCount < maxJobs) {
         const next = this.aiQueue.shift()!;
         const batch = this.state.aiBatches.find((b) => b.batchId === next.batchId);
         if (!batch) continue;
@@ -942,6 +964,7 @@ export class ServerBatchQueueManager {
         if (item.status === 'completed') continue;
         const claimed = await this.claimAiJob(item);
         if (!claimed) continue;
+        processedCount++;
 
         const nowIso = new Date().toISOString();
         item.status = 'processing';
@@ -1088,8 +1111,8 @@ export class ServerBatchQueueManager {
       }
     } finally {
       this.aiWorkerRunning = false;
-      if (this.aiQueue.length > 0) {
-        await this.processAiQueue();
+      if (this.aiQueue.length > 0 && !process.env.VERCEL) {
+        await this.processAiQueue(maxJobs);
       }
     }
   }
