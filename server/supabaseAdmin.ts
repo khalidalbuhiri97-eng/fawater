@@ -14,6 +14,8 @@ export const FAWATER_TABLES = [
   'export_batches',
   'export_batch_items',
   'ai_extraction_logs',
+  'ai_processing_batches',
+  'ai_processing_jobs',
   'audit_logs',
   'app_settings',
 ] as const;
