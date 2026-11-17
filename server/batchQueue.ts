@@ -728,7 +728,7 @@ export class ServerBatchQueueManager {
         status: 'لم تبدأ',
         processingStatus: 'pending' as TaskProcessingStatus,
         hasImage: true,
-        storagePath: undefined,
+        storagePath: undefined as string | undefined,
         imageFileName: f.fileName,
         imageMimeType: safeMime,
         imageFileSize: f.fileSize || buffer?.byteLength || 0,
