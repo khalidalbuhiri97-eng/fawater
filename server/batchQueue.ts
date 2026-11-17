@@ -907,15 +907,19 @@ export class ServerBatchQueueManager {
     // invocation while durable jobs remain so large batches continue after the
     // original upload request and after the user closes the page.
     if (process.env.VERCEL && (this.aiQueue.length > 0 || this.exportQueue.length > 0)) {
-      const baseUrl = (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')).replace(/\/$/, '');
+      const configuredAppUrl = process.env.APP_URL?.trim();
+      const baseUrl = (configuredAppUrl?.startsWith('https://') || configuredAppUrl?.startsWith('http://')
+        ? configuredAppUrl
+        : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '').replace(/\/$/, '');
       const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
       if (baseUrl && serviceKey) {
         try {
-          await fetch(`${baseUrl}/api/background/worker`, {
+          const response = await fetch(`${baseUrl}/api/background/worker`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
             body: '{}',
           });
+          if (!response.ok) throw new Error(`worker endpoint returned ${response.status}`);
         } catch (error: any) {
           console.error('[batchQueue] Could not schedule the next Vercel worker invocation:', error?.message || error);
         }
