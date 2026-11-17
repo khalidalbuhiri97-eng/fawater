@@ -6,7 +6,7 @@
   "installCommand": "bun install",
   "functions": {
     "api/[...path].ts": {
-      "maxDuration": 300
+      "maxDuration": 60
     }
   }
 }
