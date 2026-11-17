@@ -259,18 +259,53 @@ async function startServer() {
     }
   });
 
-  app.post('/api/background/ai-batches', async (_req, res) => {
-    res.status(410).json({
-      success: false,
-      error: 'تم إيقاف التحليل في الخلفية. استخدم التحليل المباشر من صفحة رفع الفواتير.',
-    });
+  app.post('/api/background/ai-batches', async (req, res) => {
+    try {
+      const { organization, files } = req.body || {};
+      if (!organization?.id || !UUID_REGEX.test(organization.id)) {
+        return res.status(400).json({ success: false, error: 'معرف المؤسسة UUID مطلوب للمعالجة.' });
+      }
+      if (!Array.isArray(files) || files.length === 0) {
+        return res.status(400).json({ success: false, error: 'لم يتم إرفاق أي فواتير للمعالجة.' });
+      }
+      if (files.length > 50) {
+        return res.status(413).json({ success: false, error: 'الحد الأقصى للدفعة الواحدة 50 فاتورة.' });
+      }
+      for (const file of files) {
+        if (!file?.imageBase64 || typeof file.imageBase64 !== 'string') {
+          return res.status(400).json({ success: false, error: 'إحدى الفواتير لا تحتوي على ملف صالح.' });
+        }
+      }
+
+      const queued = await batchQueue.enqueueAiBatch({
+        organization,
+        files,
+      });
+      return res.status(202).json({
+        success: true,
+        batchId: queued.batch.batchId,
+        supabaseSynced: queued.batch.supabaseSynced,
+        supabaseWarning: queued.batch.supabaseWarning,
+        initialInvoices: queued.initialInvoices,
+      });
+    } catch (error: any) {
+      console.error('[background-ai] enqueue failed:', error?.message || error);
+      return res.status(500).json({
+        success: false,
+        error: error?.message || 'تعذر حفظ الفواتير في طابور المعالجة الخلفية.',
+      });
+    }
   });
 
-  app.post('/api/background/ai-batches/:batchId/retry', async (_req, res) => {
-    res.status(410).json({
-      success: false,
-      error: 'إعادة التحليل في الخلفية متوقفة. افتح صفحة رفع الفواتير وابدأ التحليل المباشر.',
-    });
+  app.post('/api/background/ai-batches/:batchId/retry', async (req, res) => {
+    try {
+      const batch = await batchQueue.retryFailedAiBatchItems(req.params.batchId);
+      if (!batch) return res.status(404).json({ success: false, error: 'لم يتم العثور على دفعة المعالجة.' });
+      return res.json({ success: true, batchId: batch.batchId });
+    } catch (error: any) {
+      console.error('[background-ai] retry failed:', error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || 'تعذرت إعادة المحاولة.' });
+    }
   });
 
   app.post('/api/background/exports', async (req, res) => {
