@@ -331,6 +331,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0 || extracting) return;
     if (selectedFiles.length > 50) { setErrorMsg('الحد الأقصى للدفعة الواحدة 50 فاتورة.'); return; }
+    const totalBytes = selectedFiles.reduce((sum, item) => sum + item.file.size, 0);
+    if (totalBytes > 150 * 1024 * 1024) { setErrorMsg('إجمالي حجم الدفعة يتجاوز 150 ميغابايت. قسّم الفواتير إلى دفعات أصغر.'); return; }
     setExtracting(true);
     setUploadProgress(0);
     setUploadProgressLabel('تهيئة الرفع الآمن إلى التخزين السحابي...');
