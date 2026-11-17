@@ -633,17 +633,6 @@ export class ServerBatchQueueManager {
       const relPath = `${invoiceId}.bin`;
       await fs.writeFile(path.join(UPLOADS_DIR, relPath), buf);
 
-      const uploadRes = await this.uploadAttachmentToSupabase({
-        organizationId: orgId,
-        invoiceId,
-        buffer: buf,
-        mimeType: safeMime,
-        fileName: f.fileName,
-      });
-      if (!uploadRes.ok || !uploadRes.storagePath) {
-        throw new Error(uploadRes.warning || 'تعذر رفع صورة الفاتورة إلى Supabase Storage. لم تتم جدولة التحليل.');
-      }
-
       const manualChoice =
         f.manualDocumentType === 'مبيعات' || f.manualDocumentType === 'مشتريات'
           ? f.manualDocumentType
@@ -677,11 +666,10 @@ export class ServerBatchQueueManager {
         status: 'لم تبدأ',
         processingStatus: 'pending' as TaskProcessingStatus,
         hasImage: true,
-        storagePath: uploadRes.storagePath,
         imageFileName: f.fileName,
         imageMimeType: safeMime,
         imageFileSize: f.fileSize || buf.byteLength,
-        syncStatus: uploadRes.ok ? 'synced' : 'pending',
+        syncStatus: 'pending',
         createdAt: nowIso.split('T')[0],
         updatedAt: nowIso,
       };
@@ -691,10 +679,22 @@ export class ServerBatchQueueManager {
         invoice: initialInvoice,
       });
       if (!invSaveRes.ok) {
-        allSupabaseSynced = false;
-        if (!firstWarning) firstWarning = invSaveRes.warning;
-        initialInvoice.syncStatus = 'pending';
+        throw new Error(invSaveRes.warning || 'تعذر إنشاء سجل الفاتورة في Supabase قبل رفع المرفق.');
       }
+
+      // The invoice row must exist before inserting its attachment metadata (FK invoice_id).
+      const uploadRes = await this.uploadAttachmentToSupabase({
+        organizationId: orgId,
+        invoiceId,
+        buffer: buf,
+        mimeType: safeMime,
+        fileName: f.fileName,
+      });
+      if (!uploadRes.ok || !uploadRes.storagePath) {
+        throw new Error(uploadRes.warning || 'تعذر رفع صورة الفاتورة إلى Supabase Storage. لم تتم جدولة التحليل.');
+      }
+      initialInvoice.storagePath = uploadRes.storagePath;
+      initialInvoice.syncStatus = 'synced';
 
       items.push({
         invoiceId,
