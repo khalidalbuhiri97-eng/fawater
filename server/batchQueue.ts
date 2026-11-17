@@ -24,6 +24,7 @@ export interface AiBatchItemState {
 
 export interface AiBatchState {
   batchId: string;
+  createdBy: string;
   organizationId: string;
   organizationName: string;
   activityType: string;
@@ -130,6 +131,48 @@ export class ServerBatchQueueManager {
       return { ok: false, warning: 'Supabase غير مهيأ على الخادم' };
     }
     try {
+      const completedCount = batch.items.filter((item) => item.status === 'completed').length;
+      const failedCount = batch.items.filter((item) => item.status === 'failed').length;
+      const activeCount = batch.items.filter((item) => item.status === 'pending' || item.status === 'processing').length;
+      const batchStatus = activeCount > 0 ? (batch.items.some((item) => item.status === 'processing') ? 'processing' : 'pending')
+        : failedCount === batch.items.length ? 'failed' : 'completed';
+
+      const { error: batchError } = await client.from('ai_processing_batches').upsert({
+        id: batch.batchId,
+        organization_id: batch.organizationId,
+        created_by: batch.createdBy,
+        status: batchStatus,
+        total_count: batch.items.length,
+        completed_count: completedCount,
+        failed_count: failedCount,
+        updated_at: batch.updatedAt,
+      }, { onConflict: 'id' });
+      if (batchError) return { ok: false, warning: batchError.message };
+
+      const jobRows = batch.items.filter((item) => Boolean(item.storagePath)).map((item) => ({
+        batch_id: batch.batchId,
+        organization_id: batch.organizationId,
+        invoice_id: item.invoiceId,
+        created_by: batch.createdBy,
+        file_name: item.fileName,
+        mime_type: item.mimeType,
+        file_size: item.fileSize || 0,
+        storage_path: item.storagePath,
+        manual_document_type: item.manualDocumentType,
+        status: item.status,
+        attempts: item.attempts,
+        error_message: item.errorMessage || null,
+        extracted_data: item.status === 'completed' ? (item.invoiceRecord || null) : null,
+        locked_at: item.status === 'processing' ? item.updatedAt : null,
+        completed_at: item.status === 'completed' ? item.updatedAt : null,
+        updated_at: item.updatedAt,
+      }));
+      if (jobRows.length !== batch.items.length) {
+        return { ok: false, warning: 'لم تُرفع كل صور الفواتير إلى Storage؛ لا يمكن اعتماد الدفعة.' };
+      }
+      const { error: jobsError } = await client.from('ai_processing_jobs').upsert(jobRows, { onConflict: 'invoice_id' });
+      if (jobsError) return { ok: false, warning: jobsError.message };
+
       const compactBatch = {
         ...batch,
         items: batch.items.map((it) => ({
@@ -137,14 +180,11 @@ export class ServerBatchQueueManager {
           invoiceRecord: it.invoiceRecord ? { ...it.invoiceRecord, imageBase64: undefined } : undefined,
         })),
       };
-      const { error } = await client.from('app_settings').upsert(
-        {
-          setting_key: `bg_ai_batch_${batch.batchId}`,
-          setting_value: compactBatch,
-        },
+      const { error: legacyError } = await client.from('app_settings').upsert(
+        { setting_key: `bg_ai_batch_${batch.batchId}`, setting_value: compactBatch },
         { onConflict: 'setting_key' }
       );
-      if (error) return { ok: false, warning: error.message };
+      if (legacyError) return { ok: false, warning: legacyError.message };
       return { ok: true };
     } catch (err: any) {
       return { ok: false, warning: err?.message || 'فشل حفظ الدفعة في Supabase' };
@@ -423,26 +463,23 @@ export class ServerBatchQueueManager {
     let recoveredAiItems = 0;
     let recoveredExportJobs = 0;
 
-    // Background AI extraction is disabled: never resume queued or interrupted AI work.
-    // Preserve completed invoices and mark unfinished legacy queue items as cancelled.
+    // Re-queue unfinished work after process restarts. Images are recovered from private Supabase Storage.
     for (const batch of this.state.aiBatches) {
-      let batchChanged = false;
       for (const item of batch.items) {
         if (item.status === 'completed' || item.status === 'failed') continue;
-        item.status = 'failed';
-        item.errorMessage = 'تم إيقاف التحليل في الخلفية. أعد تحليل الفاتورة من صفحة الرفع أثناء بقائك فيها.';
-        item.updatedAt = new Date().toISOString();
-        if (item.invoiceRecord) {
-          item.invoiceRecord.status = 'فشل';
-          item.invoiceRecord.processingStatus = 'failed';
-          item.invoiceRecord.errorMessage = item.errorMessage;
+        if (!item.storagePath) {
+          item.status = 'failed';
+          item.errorMessage = 'ملف الفاتورة غير محفوظ في التخزين السحابي؛ أعد رفعه.';
+          item.updatedAt = new Date().toISOString();
+          continue;
         }
-        batchChanged = true;
+        if (item.status === 'processing') item.status = 'pending';
+        if (!this.aiQueue.some((queued) => queued.batchId === batch.batchId && queued.invoiceId === item.invoiceId)) {
+          this.aiQueue.push({ batchId: batch.batchId, invoiceId: item.invoiceId });
+          recoveredAiItems++;
+        }
       }
-      if (batchChanged) {
-        batch.updatedAt = new Date().toISOString();
-        await this.saveAiBatchToSupabase(batch);
-      }
+      await this.saveAiBatchToSupabase(batch);
     }
 
     for (const job of this.state.exportJobs) {
@@ -473,6 +510,7 @@ export class ServerBatchQueueManager {
   }
 
   public async enqueueAiBatch(params: {
+    createdBy: string;
     organization: {
       id: string;
       name: string;
@@ -528,9 +566,8 @@ export class ServerBatchQueueManager {
         mimeType: safeMime,
         fileName: f.fileName,
       });
-      if (!uploadRes.ok) {
-        allSupabaseSynced = false;
-        if (!firstWarning) firstWarning = uploadRes.warning;
+      if (!uploadRes.ok || !uploadRes.storagePath) {
+        throw new Error(uploadRes.warning || 'تعذر رفع صورة الفاتورة إلى Supabase Storage. لم تتم جدولة التحليل.');
       }
 
       const manualChoice =
@@ -603,6 +640,7 @@ export class ServerBatchQueueManager {
 
     const batch: AiBatchState = {
       batchId,
+      createdBy: params.createdBy,
       organizationId: orgId,
       organizationName: orgMeta.name,
       activityType: orgMeta.activityType,
