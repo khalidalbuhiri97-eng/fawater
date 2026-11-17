@@ -63,6 +63,14 @@ export async function createServerApp() {
   // =========================================================================
   app.use('/api', async (req, res, next) => {
     const authorization = req.headers.authorization || '';
+    if (
+      req.path === '/background/worker' &&
+      process.env.SUPABASE_SERVICE_ROLE_KEY &&
+      authorization === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`
+    ) {
+      (req as any).internalWorker = true;
+      return next();
+    }
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
     const publicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_1hfYV443ep4J0mN2aO_e2g_BBPJmcXq';
     const url = process.env.SUPABASE_URL || 'https://fryrlbgonkvounnarfwd.supabase.co';
@@ -260,6 +268,13 @@ export async function createServerApp() {
         error: errMsg,
       });
     }
+  });
+
+  app.post('/api/background/worker', (req, res) => {
+    if (!(req as any).internalWorker) {
+      return res.status(401).json({ success: false, error: 'غير مصرح بتشغيل عامل المعالجة.' });
+    }
+    return res.status(202).json({ success: true, accepted: true });
   });
 
   app.post('/api/background/ai-batches', async (req, res) => {
