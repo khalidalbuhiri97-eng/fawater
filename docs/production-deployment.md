@@ -38,7 +38,8 @@ Set these in the hosting provider's secret/environment-variable manager. Never c
 
 Optional:
 - `PORT`: HTTP port (defaults to 3000).
-- `APP_URL`: canonical public app URL.
+- `APP_URL`: canonical public app URL (optional; the Vercel deployment URL and configured production domain are fallbacks).
+- `GEMINI_MODEL`: optional model override; the default is `gemini-3.5-flash-lite`.
 
 ## Runtime requirements
 
