@@ -8,6 +8,7 @@ import {
   Operation,
 } from '../types';
 import { clearLegacyTemplateCaches } from './templateService';
+import { getSupabaseBrowserClient } from '../auth/supabaseClient';
 import {
   generateUuid,
   getAllExportTrackingFromStore,
@@ -107,7 +108,8 @@ export async function saveInvoiceImage(
 }
 
 export async function getInvoiceImage(
-  invoiceId: string
+  invoiceId: string,
+  storagePath?: string
 ): Promise<{ imageBase64: string; imageMimeType: string } | null> {
   try {
     const direct = await idbGet<StoredImageRecord>(STORE_NAMES.INVOICE_IMAGES, invoiceId);
@@ -124,7 +126,30 @@ export async function getInvoiceImage(
     // ignore
   }
 
-  // Fallback to Supabase Storage if image exists remotely
+  // Prefer direct authenticated Storage download. This avoids sending large base64 images through Vercel Functions.
+  if (storagePath && typeof navigator !== 'undefined' && navigator.onLine) {
+    try {
+      const { data: blob, error } = await getSupabaseBrowserClient().storage.from('invoice-images').download(storagePath);
+      if (!error && blob) {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(reader.error || new Error('تعذر قراءة صورة الفاتورة.'));
+          reader.readAsDataURL(blob);
+        });
+        const imageBase64 = dataUrl.split(',')[1] || '';
+        const imageMimeType = blob.type || 'image/jpeg';
+        if (imageBase64) {
+          await saveInvoiceImage(invoiceId, imageBase64, imageMimeType, { fileSize: blob.size });
+          return { imageBase64, imageMimeType };
+        }
+      }
+    } catch {
+      // Fall through to the authenticated server endpoint for legacy records.
+    }
+  }
+
+  // Fallback to the server for legacy attachments without a Storage path.
   if (isValidUuid(invoiceId) && (typeof navigator === 'undefined' || navigator.onLine)) {
     try {
       const res = await fetch(`/api/supabase/attachments/${encodeURIComponent(invoiceId)}`);
@@ -159,7 +184,7 @@ export async function hydrateOperationImages(operation: Operation): Promise<Oper
       if (inv.imageBase64) {
         return { ...inv, hasImage: true };
       }
-      const stored = await getInvoiceImage(inv.id);
+      const stored = await getInvoiceImage(inv.id, inv.storagePath);
       if (stored) {
         return {
           ...inv,
