@@ -912,7 +912,7 @@ export class ServerBatchQueueManager {
       const configuredAppUrl = process.env.APP_URL?.trim();
       const baseUrl = (configuredAppUrl?.startsWith('https://') || configuredAppUrl?.startsWith('http://')
         ? configuredAppUrl
-        : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '').replace(/\/$/, '');
+        : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://fawater-mocha.vercel.app').replace(/\/$/, '');
       const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
       if (baseUrl && serviceKey) {
         try {
