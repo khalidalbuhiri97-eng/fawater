@@ -105,6 +105,14 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
+  const extractionAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) extractionAbortRef.current?.abort();
+    return () => extractionAbortRef.current?.abort();
+  }, [isOpen]);
+
+
   useEffect(() => {
     if (isOpen) {
       setMode(initialMode);
@@ -327,13 +335,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setSelectedFiles((prev) => [...prev, ...files.map((file) => ({ file, classification: aiDefaultClassification }))]);
     e.target.value = '';
   };
-  const extractionAbortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) extractionAbortRef.current?.abort();
-    return () => extractionAbortRef.current?.abort();
-  }, [isOpen]);
-
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0 || extracting) return;
 
