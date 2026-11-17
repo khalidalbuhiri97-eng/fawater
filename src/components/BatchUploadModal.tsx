@@ -19,7 +19,7 @@ import {
 import { InvoiceRecord, Operation } from '../types';
 import { saveInvoiceImage } from '../services/dbService';
 import { generateUuid } from '../services/localStore';
-import { authenticatedFetch } from '../auth/supabaseClient';
+import { enqueueAiBackgroundBatch } from '../services/backgroundQueueClient';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -104,13 +104,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [savingManual, setSavingManual] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-
-  const extractionAbortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) extractionAbortRef.current?.abort();
-    return () => extractionAbortRef.current?.abort();
-  }, [isOpen]);
 
 
   useEffect(() => {
@@ -338,153 +331,68 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0 || extracting) return;
 
-    const controller = new AbortController();
-    extractionAbortRef.current = controller;
     setExtracting(true);
     setUploadProgress(0);
-    setUploadProgressLabel('بدء تحليل الفواتير مباشرة...');
+    setUploadProgressLabel('تجهيز الملفات وحفظها في التخزين السحابي...');
     setErrorMsg('');
 
-    const completedInvoices: InvoiceRecord[] = [];
-    const failures: string[] = [];
-
     try {
+      const files: Array<{
+        invoiceId: string;
+        imageBase64: string;
+        mimeType: string;
+        fileName: string;
+        fileSize: number;
+        manualDocumentType: AiClassificationChoice;
+      }> = [];
+      let totalBytes = 0;
+
       for (let index = 0; index < selectedFiles.length; index++) {
-        if (controller.signal.aborted) break;
         const item = selectedFiles[index];
-        const invoiceId = generateUuid();
-        setUploadProgress(Math.round((index / selectedFiles.length) * 100));
-        setUploadProgressLabel(`جارٍ تحليل الفاتورة ${index + 1} من ${selectedFiles.length}: ${item.file.name}`);
-
-        try {
-          if (item.file.size > 15 * 1024 * 1024) {
-            throw new Error('حجم الملف يتجاوز 15 ميغابايت.');
-          }
-          const imageBase64 = await fileToBase64(item.file);
-          if (controller.signal.aborted) break;
-          const mimeType = item.file.type || 'image/jpeg';
-
-          const response = await authenticatedFetch('/api/extract-invoice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              invoiceId,
-              imageBase64,
-              mimeType,
-              fileName: item.file.name,
-              customFields: operation.customFields,
-              organizationName: operation.name,
-              activityType: operation.activityType,
-              manualDocumentType: item.classification,
-            }),
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok || !result.success || !result.data) {
-            throw new Error(result.error || `فشل التحليل (HTTP ${response.status})`);
-          }
-
-          const ext = result.data;
-          const numeric = (value: any) => {
-            if (value === null || value === undefined || value === '') return undefined;
-            const parsed = Number(value);
-            return Number.isFinite(parsed) ? parsed : undefined;
-          };
-          const now = new Date().toISOString();
-          try {
-            await saveInvoiceImage(invoiceId, imageBase64, mimeType, {
-              organizationId: operation.id,
-              fileName: item.file.name,
-              fileSize: item.file.size,
-              enqueueSync: true,
-            });
-          } catch (imageError) {
-            console.error('Could not save invoice image locally:', imageError);
-          }
-
-          completedInvoices.push({
-            id: invoiceId,
-            organizationId: operation.id,
-            invoiceNumber: ext.invoiceNumber || '',
-            invoiceDate: ext.invoiceDate || '',
-            day: ext.day || '',
-            documentType: ext.documentType || 'يحتاج تحديد النوع',
-            entryMethod: 'ai',
-            issuerName: ext.issuerName || '',
-            clientName: ext.clientName || '',
-            issuerTaxId: ext.issuerTaxId || '',
-            clientTaxId: ext.clientTaxId || '',
-            currency: ext.currency || '',
-            subtotal: numeric(ext.subtotal),
-            taxAmount: numeric(ext.taxAmount),
-            taxRate: numeric(ext.taxRate),
-            discount: numeric(ext.discount),
-            grandTotal: numeric(ext.grandTotal),
-            cashSales: numeric(ext.cashSales),
-            networkSales: numeric(ext.networkSales),
-            notes: ext.notes || '',
-            items: Array.isArray(ext.items) ? ext.items.map((entry: any) => ({
-              id: generateUuid(),
-              name: String(entry?.name || ''),
-              code: entry?.code ? String(entry.code) : undefined,
-              quantity: numeric(entry?.quantity),
-              unit: entry?.unit ? String(entry.unit) : undefined,
-              unitPrice: numeric(entry?.unitPrice),
-              discount: numeric(entry?.discount),
-              tax: numeric(entry?.tax),
-              total: numeric(entry?.total),
-            })) : [],
-            customFieldsValues: {
-              ...(ext.customFieldsExtracted && typeof ext.customFieldsExtracted === 'object' ? ext.customFieldsExtracted : {}),
-              ...(ext.paymentMethod ? { __official_payment_method: ext.paymentMethod } : {}),
-            },
-            classificationReason: ext.classificationReason || '',
-            status: 'تحتاج مراجعة',
-            processingStatus: 'completed',
-            hasImage: true,
-            imageMimeType: mimeType,
-            imageFileName: item.file.name,
-            imageFileSize: item.file.size,
-            syncStatus: 'pending',
-            createdAt: now,
-            updatedAt: now,
-          });
-        } catch (error: any) {
-          if (controller.signal.aborted || error?.name === 'AbortError') break;
-          failures.push(`${item.file.name}: ${error?.message || 'تعذر التحليل'}`);
+        if (item.file.size > 15 * 1024 * 1024) {
+          throw new Error(`حجم الملف "${item.file.name}" يتجاوز 15 ميغابايت.`);
         }
-      }
-
-      if (completedInvoices.length > 0) {
-        const now = new Date().toISOString();
-        onUpdateOperation({
-          ...operation,
-          invoices: [...completedInvoices, ...(operation.invoices || [])],
-          updatedAt: now,
+        totalBytes += item.file.size;
+        // Keep the JSON request below Express's 50 MB body limit after base64 expansion.
+        if (totalBytes > 34 * 1024 * 1024) {
+          throw new Error('إجمالي حجم الدفعة كبير جداً. قسّم الملفات إلى دفعات أصغر (حد تقريبي 34 ميغابايت).');
+        }
+        setUploadProgress(Math.round(((index + 1) / selectedFiles.length) * 25));
+        setUploadProgressLabel(`تجهيز الملف ${index + 1} من ${selectedFiles.length}: ${item.file.name}`);
+        const imageBase64 = await fileToBase64(item.file);
+        files.push({
+          invoiceId: generateUuid(),
+          imageBase64,
+          mimeType: item.file.type || 'image/jpeg',
+          fileName: item.file.name,
+          fileSize: item.file.size,
+          manualDocumentType: item.classification,
         });
       }
 
-      if (controller.signal.aborted) {
-        setUploadProgressLabel(`توقف التحليل عند مغادرة الصفحة. تم حفظ ${completedInvoices.length} فاتورة مكتملة.`);
-        setSelectedFiles(selectedFiles.slice(completedInvoices.length));
-      } else if (failures.length > 0) {
-        setErrorMsg(`تم تحليل ${completedInvoices.length} فاتورة، وتعذر تحليل ${failures.length}: ${failures.slice(0, 3).join(' | ')}`);
-        setSelectedFiles([]);
-      } else {
-        setUploadProgress(100);
-        setUploadProgressLabel(`اكتمل تحليل وحفظ ${completedInvoices.length} فاتورة.`);
-        setSelectedFiles([]);
-        onClose();
+      setUploadProgress(35);
+      setUploadProgressLabel('رفع الصور وحفظ مهام التحليل في Supabase...');
+      const queued = await enqueueAiBackgroundBatch({ organization: operation, files });
+
+      if (queued.initialInvoices.length > 0) {
+        onUpdateOperation({
+          ...operation,
+          invoices: [...queued.initialInvoices, ...(operation.invoices || [])],
+          updatedAt: new Date().toISOString(),
+        });
       }
+
+      setUploadProgress(100);
+      setUploadProgressLabel(`تم حفظ ${queued.initialInvoices.length} فاتورة في الطابور. سيستمر التحليل حتى بعد إغلاق هذه النافذة.`);
+      setSelectedFiles([]);
+      onBackgroundBatchQueued?.(queued.batchId);
+      onClose();
     } catch (error: any) {
-      if (error?.name !== 'AbortError') setErrorMsg(error?.message || 'تعذر تحليل الفواتير.');
+      setErrorMsg(error?.message || 'تعذر إرسال الفواتير إلى طابور المعالجة الخلفية.');
     } finally {
-      if (extractionAbortRef.current === controller) extractionAbortRef.current = null;
       setExtracting(false);
-      if (!controller.signal.aborted) {
-        setUploadProgress(0);
-        setUploadProgressLabel('بدء تحليل الفواتير مباشرة...');
-      }
+      setUploadProgress(0);
+      setUploadProgressLabel('حفظ الفواتير في طابور المعالجة...');
     }
   };
 
