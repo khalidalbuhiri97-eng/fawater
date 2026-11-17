@@ -16,6 +16,19 @@ docker run --rm -p 3000:3000 \
 
 The public Supabase project URL and publishable key are configured as safe defaults in the app. They can be overridden with `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_ANON_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_PUBLISHABLE_KEY`.
 
+## Vercel deployment
+
+The project homepage is configured for Vercel. The repository now includes `vercel.json` and an API catch-all at `api/[...path].ts`; Vercel serves the built Vite frontend and routes `/api/*` requests through the Express API function.
+
+Vercel background invoice processing uses `waitUntil` and chains bounded worker invocations. Each invocation handles up to five AI jobs, claims jobs atomically in Supabase to prevent duplicate Gemini calls, and schedules the next invocation while jobs remain. The worker endpoint is protected by the server-only Supabase service-role key. Invoice files are uploaded directly from the browser to the private Storage bucket, avoiding Vercel's request-body limit.
+
+Set the following as **Vercel Production and Preview environment variables** before relying on AI processing:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `GEMINI_API_KEY`
+
+Set `APP_URL` only if it is a full HTTPS URL; otherwise Vercel's `VERCEL_URL` is used automatically for worker chaining. After changing environment variables, redeploy the project so the new function runtime receives them.
+
 ## Required server secrets
 
 Set these in the hosting provider's secret/environment-variable manager. Never commit them or put them in a `VITE_*` variable:
