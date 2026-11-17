@@ -84,7 +84,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
             mimeType: inv.imageMimeType || 'image/jpeg',
           };
         } else if (!hydratedImages[inv.id]) {
-          const stored = await getInvoiceImage(inv.id);
+          const stored = await getInvoiceImage(inv.id, inv.storagePath);
           if (stored && !cancelled) {
             updates[inv.id] = {
               base64: stored.imageBase64,
