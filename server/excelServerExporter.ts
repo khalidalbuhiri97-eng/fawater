@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
+import { normalizeInvoiceDate } from './dateUtils.js';
 
 export const SERVER_OFFICIAL_TEMPLATE_PATH = path.resolve(
   process.cwd(),
@@ -68,39 +69,45 @@ function getCellText(cell: ExcelJS.Cell): string {
   return String(v).trim();
 }
 
+function normalizeHeader(value: string): string {
+  return String(value || '').replace(/[\u064B-\u065F\u0670ـ]/g, '').replace(/[\s\u00A0]+/g, ' ').trim();
+}
+
 function classifyColumnKey(sheetName: string, colLetter: string, headerName: string): string {
+  const header = normalizeHeader(headerName);
   if (sheetName === 'المبيعات') {
-    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) return 'invoiceDate';
-    if (headerName.includes('اليوم')) return 'day';
+    if (header.includes('التاريخ') || header.includes('تاريخ') || header.includes('تأريخ')) return 'invoiceDate';
+    if (header.includes('اليوم')) return 'day';
     if (
-      (headerName.includes('المبيعات النقدية') || headerName.includes('النقدية') || headerName.includes('الكاش')) &&
-      !headerName.includes('رصيد')
+      (header.includes('المبيعات النقدية') || header.includes('النقدية') || header.includes('الكاش')) &&
+      !header.includes('رصيد')
     ) {
       return 'cashSales';
     }
-    if (headerName.includes('الشبكة') && !headerName.includes('رصيد')) return 'networkSales';
-    if (headerName.includes('إجمالي المبيعات') || headerName.includes('الإجمالي')) return 'formula:salesTotal';
-    if (headerName.includes('رصيد الكاش')) return 'cashBalance';
-    if (headerName.includes('رصيد الصندوق')) return 'cashBoxBalance';
-    if (headerName.includes('رصيد الشبكة')) return 'networkBalance';
+    if (header.includes('الشبكة') && !header.includes('رصيد')) return 'networkSales';
+    if (header.includes('إجمالي المبيعات') || header.includes('الإجمالي')) return 'formula:salesTotal';
+    if (header.includes('رصيد الكاش')) return 'cashBalance';
+    if (header.includes('رصيد الصندوق')) return 'cashBoxBalance';
+    if (header.includes('رصيد الشبكة')) return 'networkBalance';
   } else if (sheetName === 'المشتريات والموردين') {
-    if (headerName.includes('التاريخ') || headerName.includes('تاريخ') || headerName.includes('تأريخ')) return 'invoiceDate';
-    if (headerName.includes('اسم المورد') || headerName.includes('المورد')) return 'issuerName';
-    if (headerName.includes('رقم الفاتورة')) return 'invoiceNumber';
-    if (headerName.includes('قبل الضريبة')) return 'subtotal';
+    if (header.includes('التاريخ') || header.includes('تاريخ') || header.includes('تأريخ')) return 'invoiceDate';
+    if (header.includes('اسم المورد') || header.includes('المورد')) return 'issuerName';
+    if (header.includes('طريقة الدفع') || header.includes('الدفع')) return 'paymentMethod';
+    if (header.includes('رقم الفاتورة')) return 'invoiceNumber';
+    if (header.includes('قبل الضريبة')) return 'subtotal';
     if (
-      (headerName.includes('ضريبة القيمة المضافة') || headerName.includes('الضريبة')) &&
-      !headerName.includes('قبل الضريبة') &&
-      !headerName.includes('شامل الضريبة')
+      (header.includes('ضريبة القيمة المضافة') || header.includes('الضريبة')) &&
+      !header.includes('قبل الضريبة') &&
+      !header.includes('شامل الضريبة')
     ) {
       return 'taxAmount';
     }
-    if (headerName.includes('شامل الضريبة') || headerName.includes('الإجمالي')) {
+    if (header.includes('شامل الضريبة') || header.includes('الإجمالي')) {
       return 'formula:purchasesTotal';
     }
-    if (headerName.includes('الرصيد')) return 'balance';
-    if (headerName.includes('الرقم الضريبي')) return 'issuerTaxId';
-    if (headerName === '#' || headerName.includes('رقم العملية')) return 'operationNumber';
+    if (header.includes('الرصيد')) return 'balance';
+    if (header.includes('الرقم الضريبي')) return 'issuerTaxId';
+    if (headerName === '#' || header.includes('رقم العملية')) return 'operationNumber';
   }
   return `extra:${colLetter}`;
 }
@@ -222,14 +229,11 @@ function findNextWritableRow(ws: ExcelJS.Worksheet, sheetInfo: ServerTemplateShe
   return lastOccupied + 1;
 }
 
-function parseExcelDateValue(dateStr: string): Date | string | null {
-  const trimmed = (dateStr || '').trim();
-  if (!trimmed) return null;
-  const isoMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
-  if (isoMatch) {
-    return new Date(Date.UTC(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])));
-  }
-  return trimmed;
+function parseExcelDateValue(dateValue: unknown): Date | null {
+  const normalized = normalizeInvoiceDate(dateValue);
+  if (!normalized) return null;
+  const [year, month, day] = normalized.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 function copyRowStyle(sourceRow: ExcelJS.Row, targetRow: ExcelJS.Row, colCount: number) {
@@ -311,8 +315,9 @@ function findColumnByKeywords(
   excludeKeywords: string[] = []
 ): ServerTemplateColumnInfo | undefined {
   for (const kw of keywords) {
+    const normalizedKeyword = normalizeHeader(kw);
     const match = columns.find(
-      (col) => col.name.includes(kw) && !excludeKeywords.some((ex) => col.name.includes(ex))
+      (col) => normalizeHeader(col.name).includes(normalizedKeyword) && !excludeKeywords.some((ex) => normalizeHeader(col.name).includes(normalizeHeader(ex)))
     );
     if (match) return match;
   }
@@ -342,7 +347,7 @@ export async function generateOfficialExcelOnServer(params: {
   let nextSalesRow = findNextWritableRow(salesWs, salesSheetInfo);
   let nextPurchasesRow = findNextWritableRow(purchasesWs, purchasesSheetInfo);
 
-  const salesDateCol = findColumnByKeywords(salesSheetInfo.columns, ['التاريخ']);
+  const salesDateCol = findColumnByKeywords(salesSheetInfo.columns, ['تاريخ الفاتورة', 'تأريخ الفاتورة', 'التاريخ', 'تاريخ', 'تأريخ']);
   const salesDayCol = findColumnByKeywords(salesSheetInfo.columns, ['اليوم']);
   const salesCashCol = findColumnByKeywords(salesSheetInfo.columns, ['المبيعات النقدية', 'النقدية', 'الكاش'], ['رصيد']);
   const salesNetworkCol = findColumnByKeywords(salesSheetInfo.columns, ['الشبكة'], ['رصيد']);
@@ -351,7 +356,8 @@ export async function generateOfficialExcelOnServer(params: {
   const salesBoxBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الصندوق']);
   const salesNetBalCol = findColumnByKeywords(salesSheetInfo.columns, ['رصيد الشبكة']);
 
-  const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['التاريخ']);
+  const purDateCol = findColumnByKeywords(purchasesSheetInfo.columns, ['تاريخ الفاتورة', 'تأريخ الفاتورة', 'التاريخ', 'تاريخ', 'تأريخ']);
+  const purPaymentCol = findColumnByKeywords(purchasesSheetInfo.columns, ['طريقة الدفع', 'الدفع']);
   const purSupplierCol = findColumnByKeywords(purchasesSheetInfo.columns, ['اسم المورد', 'المورد']);
   const purInvoiceNumberCol = findColumnByKeywords(purchasesSheetInfo.columns, ['رقم الفاتورة']);
   const purTaxIdCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرقم الضريبي']);
@@ -454,6 +460,15 @@ export async function generateOfficialExcelOnServer(params: {
 
       if (purDateCol) row.getCell(purDateCol.colNumber).value = parseExcelDateValue(inv.invoiceDate);
       if (purSupplierCol && inv.issuerName) row.getCell(purSupplierCol.colNumber).value = inv.issuerName;
+      if (purPaymentCol) {
+        const paymentMethod = inv.customFieldsValues?.__official_payment_method
+          ?? inv.customFieldsValues?.paymentMethod
+          ?? inv.customFieldsValues?.payment_method
+          ?? inv.paymentMethod;
+        if (paymentMethod !== undefined && paymentMethod !== null && String(paymentMethod).trim()) {
+          row.getCell(purPaymentCol.colNumber).value = String(paymentMethod).trim();
+        }
+      }
       if (purInvoiceNumberCol && inv.invoiceNumber) row.getCell(purInvoiceNumberCol.colNumber).value = inv.invoiceNumber;
       if (purTaxIdCol && inv.issuerTaxId) row.getCell(purTaxIdCol.colNumber).value = inv.issuerTaxId;
       if (purSubtotalCol && inv.subtotal !== undefined && inv.subtotal !== null) {

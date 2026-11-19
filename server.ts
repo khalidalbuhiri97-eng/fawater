@@ -14,6 +14,7 @@ import {
   stripDataUrlPrefix,
 } from './server/geminiExtractor.js';
 import { batchQueue } from './server/batchQueue.js';
+import { normalizeInvoiceDate } from './server/dateUtils.js';
 
 dotenv.config();
 
@@ -642,10 +643,7 @@ export async function createServerApp() {
       );
       if (orgErr) throw orgErr;
 
-      const safeDate =
-        invoice.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(String(invoice.invoiceDate).trim())
-          ? String(invoice.invoiceDate).trim()
-          : null;
+      const safeDate = normalizeInvoiceDate(invoice.invoiceDate);
 
       const { error: invErr } = await client.from('invoices').upsert(
         {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { extractInvoiceWithGemini, normalizeMimeType, stripDataUrlPrefix } from './geminiExtractor.js';
 import { generateOfficialExcelOnServer, ServerExportEntry } from './excelServerExporter.js';
+import { normalizeInvoiceDate } from './dateUtils.js';
 
 export type TaskProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
@@ -240,10 +241,7 @@ export class ServerBatchQueueManager {
       );
       if (orgErr) return { ok: false, warning: orgErr.message };
 
-      const safeDate =
-        invoice.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(String(invoice.invoiceDate).trim())
-          ? String(invoice.invoiceDate).trim()
-          : null;
+      const safeDate = normalizeInvoiceDate(invoice.invoiceDate);
 
       const { error: invErr } = await client.from('invoices').upsert(
         {
