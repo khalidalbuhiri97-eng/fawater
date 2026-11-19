@@ -71,17 +71,28 @@ function findNextWritableRow(
   return lastOccupied + 1;
 }
 
-function parseExcelDateValue(dateStr: string): Date | string | null {
-  const trimmed = (dateStr || '').trim();
-  if (!trimmed) return null;
-  const isoMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
-  if (isoMatch) {
-    const y = Number(isoMatch[1]);
-    const m = Number(isoMatch[2]) - 1;
-    const d = Number(isoMatch[3]);
-    return new Date(Date.UTC(y, m, d));
+function parseExcelDateValue(dateStr: string): Date | null {
+  const raw = String(dateStr || '').trim();
+  if (!raw) return null;
+  const digits = raw.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
+  const datePart = digits.match(/^\d{4}-\d{1,2}-\d{1,2}/)?.[0] || digits;
+  const match = /^(\d{1,4})[\/.-](\d{1,2})[\/.-](\d{1,4})$/.exec(datePart);
+  if (!match) {
+    const parsed = new Date(raw);
+    return Number.isFinite(parsed.getTime())
+      ? new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()))
+      : null;
   }
-  return trimmed;
+  let year: number, month: number, day: number;
+  if (match[1].length === 4) {
+    year = Number(match[1]); month = Number(match[2]); day = Number(match[3]);
+  } else if (match[3].length === 4) {
+    day = Number(match[1]); month = Number(match[2]); year = Number(match[3]);
+  } else return null;
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+  return check;
 }
 
 function copyRowStyle(sourceRow: ExcelJS.Row, targetRow: ExcelJS.Row, colCount: number) {
@@ -206,7 +217,7 @@ export async function appendInvoicesToWorkbookBuffer(
   let nextPurchasesRow = findNextWritableRow(purchasesWs, purchasesSheetInfo);
 
   // Dynamic column mapping from inspected template headers
-  const salesDateCol = findColumnByKeywords(salesSheetInfo.columns, ['التاريخ']);
+  const salesDateCol = findColumnByKeywords(salesSheetInfo.columns, ['تاريخ الفاتورة', 'تأريخ الفاتورة', 'التاريخ', 'تاريخ', 'تأريخ']);
   const salesDayCol = findColumnByKeywords(salesSheetInfo.columns, ['اليوم']);
   const salesCashCol = findColumnByKeywords(salesSheetInfo.columns, ['المبيعات النقدية', 'النقدية', 'الكاش'], ['رصيد']);
   const salesNetworkCol = findColumnByKeywords(salesSheetInfo.columns, ['الشبكة'], ['رصيد']);
