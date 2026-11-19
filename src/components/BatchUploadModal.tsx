@@ -891,7 +891,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" onClick={() => setManualZoom((z) => Math.min(z + 0.25, 5))} className="rounded-lg bg-white/10 p-2" aria-label="تكبير الصورة"><ZoomIn className="h-4 w-4" /></button>
               <button type="button" onClick={() => setManualZoom((z) => Math.max(z - 0.25, 1))} className="rounded-lg bg-white/10 p-2" aria-label="تصغير الصورة"><ZoomOut className="h-4 w-4" /></button>
-              <button type="button" onClick={() => setManualZoom(1)} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
+              <button type="button" onClick={() => setManualRotation((angle) => (angle + 90) % 360)} className="rounded-lg bg-white/10 p-2" aria-label="تدوير الصورة 90 درجة"><RotateCcw className="h-4 w-4" /></button>
+              <button type="button" onClick={() => { setManualZoom(1); setManualRotation(0); }} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
               <button type="button" onClick={() => { setImageLightboxOpen(false); setManualZoom(1); lightboxPointers.current.clear(); pinchDistance.current = null; }} className="rounded-lg bg-white/10 p-2" aria-label="إغلاق التكبير"><X className="h-5 w-5" /></button>
             </div>
           </div>
@@ -930,7 +931,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               draggable={false}
               src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
               alt="صورة الفاتورة مكبرة"
-              style={{ transform: `scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
+              style={{ transform: `rotate(${manualRotation}deg) scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
             />
           </div>
         </div>
