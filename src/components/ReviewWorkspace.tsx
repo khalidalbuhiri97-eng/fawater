@@ -54,8 +54,6 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const [zoom, setZoom] = useState(1);
   const [imageRotation, setImageRotation] = useState(0);
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
-  const [imageRotation, setImageRotation] = useState(0);
-  const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const [extractingSingle, setExtractingSingle] = useState(false);
   const [aiClassifyHint, setAiClassifyHint] = useState<'auto' | 'مبيعات' | 'مشتريات'>('auto');
   const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
@@ -63,6 +61,9 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    setZoom(1);
+    setImageRotation(0);
+    setImageLightboxOpen(false);
     if (!currentInvoice) return;
     if (currentInvoice.documentType === 'مبيعات' || currentInvoice.documentType === 'مشتريات') {
       setAiClassifyHint(currentInvoice.documentType);
