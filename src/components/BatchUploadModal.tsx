@@ -98,6 +98,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [manualCompletedIndexes, setManualCompletedIndexes] = useState<number[]>([]);
   const [manualTouchStartX, setManualTouchStartX] = useState<number | null>(null);
   const [manualZoom, setManualZoom] = useState(1);
+  const [manualRotation, setManualRotation] = useState(0);
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const lightboxPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchDistance = useRef<number | null>(null);
@@ -142,6 +143,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     const base64 = await fileToBase64(file);
     setManualImage({ fileName: file.name, base64, mimeType: file.type || 'image/jpeg' });
     setManualZoom(1);
+    setManualRotation(0);
   };
 
   const handleManualImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -482,6 +484,19 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           {mode === 'manual' ? (
             /* ==================== MANUAL MODE ==================== */
             <div className="flex min-h-0 flex-1 flex-col gap-3">
+              {/* اختيار نوع الفاتورة قبل بدء الإدخال */}
+              <div className="shrink-0 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <label className="mb-2 block text-xs font-bold text-slate-800">حدد نوع الفاتورة أولاً:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => handleManualTypeSwitch('مبيعات')} className={`rounded-xl border p-3 text-xs font-bold transition ${
+                    manualType === 'مبيعات' ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20' : 'border-slate-200 bg-white text-slate-700'
+                  }`}>مبيعات</button>
+                  <button type="button" onClick={() => handleManualTypeSwitch('مشتريات')} className={`rounded-xl border p-3 text-xs font-bold transition ${
+                    manualType === 'مشتريات' ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20' : 'border-slate-200 bg-white text-slate-700'
+                  }`}>مشتريات</button>
+                </div>
+              </div>
+
               {/* 1. Preview Area ON TOP (always visible when uploaded, never disappears while filling fields) */}
               <div className="relative z-10 shrink-0 rounded-2xl border border-slate-200 overflow-hidden bg-slate-950 shadow-lg">
                 <div className="bg-slate-900 text-white px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
@@ -501,6 +516,15 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                           title="تكبير"
                         >
                           <ZoomIn className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setManualRotation((angle) => (angle + 90) % 360)}
+                          className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+                          title="تدوير الصورة 90 درجة"
+                          aria-label="تدوير الصورة 90 درجة"
+                        >
+                          <RotateCcw className="w-4 h-4" />
                         </button>
                         <button
                           type="button"
@@ -574,8 +598,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                         onClick={() => { setManualZoom(1); setImageLightboxOpen(true); }}
                         src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
                         alt="معاينة الفاتورة"
-                        style={{ transform: `scale(${manualZoom})`, transition: 'transform 0.2s ease' }}
-                        className="h-full max-h-full max-w-full object-contain rounded-lg"
+                        style={{ transform: `rotate(${manualRotation}deg) scale(${manualZoom})`, transition: 'transform 0.2s ease' }}
+                        className="max-h-full max-w-full object-contain rounded-lg cursor-zoom-in"
                       />
                     )}
                   </div>
@@ -592,37 +616,6 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain space-y-4 pb-2">
-              {/* 2. Operation Type Selector (Sales vs Purchases) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-800 mb-2">
-                  اختر نوع الورقة في قالب Excel (تُقرأ الحقول مباشرة من القالب الرسمي):
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => handleManualTypeSwitch('مبيعات')}
-                    className={`p-3 rounded-2xl border font-bold text-xs sm:text-sm transition ${
-                      manualType === 'مبيعات'
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    ورقة المبيعات (جميع الأعمدة)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleManualTypeSwitch('مشتريات')}
-                    className={`p-3 rounded-2xl border font-bold text-xs sm:text-sm transition ${
-                      manualType === 'مشتريات'
-                        ? 'border-emerald-600 bg-emerald-50 text-emerald-900 ring-2 ring-emerald-500/20'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    ورقة المشتريات والموردين (جميع الأعمدة)
-                  </button>
-                </div>
-              </div>
-
               {/* 3. ALL Excel Columns BELOW Image Preview */}
               <div className="p-4 sm:p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-4">
                 {activeManualSheet ? (
@@ -898,7 +891,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
             <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" onClick={() => setManualZoom((z) => Math.min(z + 0.25, 5))} className="rounded-lg bg-white/10 p-2" aria-label="تكبير الصورة"><ZoomIn className="h-4 w-4" /></button>
               <button type="button" onClick={() => setManualZoom((z) => Math.max(z - 0.25, 1))} className="rounded-lg bg-white/10 p-2" aria-label="تصغير الصورة"><ZoomOut className="h-4 w-4" /></button>
-              <button type="button" onClick={() => setManualZoom(1)} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
+              <button type="button" onClick={() => setManualRotation((angle) => (angle + 90) % 360)} className="rounded-lg bg-white/10 p-2" aria-label="تدوير الصورة 90 درجة"><RotateCcw className="h-4 w-4" /></button>
+              <button type="button" onClick={() => { setManualZoom(1); setManualRotation(0); }} className="rounded-lg bg-white/10 p-2" aria-label="إعادة ضبط"><RotateCcw className="h-4 w-4" /></button>
               <button type="button" onClick={() => { setImageLightboxOpen(false); setManualZoom(1); lightboxPointers.current.clear(); pinchDistance.current = null; }} className="rounded-lg bg-white/10 p-2" aria-label="إغلاق التكبير"><X className="h-5 w-5" /></button>
             </div>
           </div>
@@ -937,7 +931,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               draggable={false}
               src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
               alt="صورة الفاتورة مكبرة"
-              style={{ transform: `scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
+              style={{ transform: `rotate(${manualRotation}deg) scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
             />
           </div>
         </div>

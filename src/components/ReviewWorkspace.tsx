@@ -52,6 +52,8 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const currentInvoice = invoices[currentIndex] || invoices[0];
 
   const [zoom, setZoom] = useState(1);
+  const [imageRotation, setImageRotation] = useState(0);
+  const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const [extractingSingle, setExtractingSingle] = useState(false);
   const [aiClassifyHint, setAiClassifyHint] = useState<'auto' | 'مبيعات' | 'مشتريات'>('auto');
   const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
@@ -59,6 +61,9 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    setZoom(1);
+    setImageRotation(0);
+    setImageLightboxOpen(false);
     if (!currentInvoice) return;
     if (currentInvoice.documentType === 'مبيعات' || currentInvoice.documentType === 'مشتريات') {
       setAiClassifyHint(currentInvoice.documentType);
@@ -444,7 +449,15 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                   <ZoomOut className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={() => setZoom(1)}
+                  onClick={() => setImageRotation((angle) => (angle + 90) % 360)}
+                  className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+                  title="تدوير الصورة 90 درجة"
+                  aria-label="تدوير الصورة 90 درجة"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => { setZoom(1); setImageRotation(0); }}
                   className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
                   title="إعادة ضبط"
                 >
@@ -465,8 +478,9 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                   <img
                     src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`}
                     alt="معاينة الفاتورة"
-                    style={{ transform: `scale(${zoom})`, transition: 'transform 0.2s ease' }}
-                    className="h-auto max-h-full max-w-full object-contain rounded-lg shadow-md"
+                    onClick={() => { setZoom(1); setImageLightboxOpen(true); }}
+                    style={{ transform: `rotate(${imageRotation}deg) scale(${zoom})`, transition: 'transform 0.2s ease' }}
+                    className="h-full max-h-full max-w-full object-contain rounded-lg shadow-md cursor-zoom-in"
                   />
                 )
               ) : (
@@ -700,6 +714,15 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
           </div>
         </div>
       </div>
+      {imageLightboxOpen && activeImg?.base64 && activeImg.mimeType !== 'application/pdf' && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label="عرض صورة الفاتورة كاملة" onClick={() => setImageLightboxOpen(false)}>
+          <div className="relative flex h-[92dvh] w-[92vw] items-center justify-center rounded-xl bg-black md:w-1/2" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setImageLightboxOpen(false)} className="absolute right-2 top-2 z-10 rounded-lg bg-white/15 px-3 py-2 text-sm font-bold text-white">إغلاق</button>
+            <button type="button" onClick={() => setImageRotation((angle) => (angle + 90) % 360)} className="absolute left-2 top-2 z-10 rounded-lg bg-white/15 px-3 py-2 text-sm font-bold text-white">تدوير 90°</button>
+            <img src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`} alt="صورة الفاتورة كاملة" className="max-h-full max-w-full object-contain" style={{ transform: `rotate(${imageRotation}deg)` }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
