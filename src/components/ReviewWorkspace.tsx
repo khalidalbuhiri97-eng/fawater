@@ -422,7 +422,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       )}
 
       {/* Split Screen Layout: Fixed/Sticky Image Viewer (Left) + Independent Scrollable Form Fields (Right) */}
-      <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,46dvh)_minmax(0,1fr)] gap-2 overflow-hidden p-1 lg:grid-cols-12 lg:grid-rows-1 lg:gap-3">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(240px,52dvh)_minmax(0,1fr)] gap-2 overflow-hidden p-1 lg:grid-cols-12 lg:grid-rows-1 lg:gap-3">
         {/* Left Column (Sticky Image Viewer - remains fixed and visible while scrolling form fields on desktop; top fixed container on mobile) */}
         <div className="flex min-h-0 flex-col gap-2 overflow-hidden lg:col-span-7">
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
@@ -480,7 +480,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                     alt="معاينة الفاتورة"
                     onClick={() => { setZoom(1); setImageLightboxOpen(true); }}
                     style={{ transform: `rotate(${imageRotation}deg) scale(${zoom})`, transition: 'transform 0.2s ease' }}
-                    className="h-full max-h-full max-w-full object-contain rounded-lg shadow-md cursor-zoom-in"
+                    className="h-full w-full max-h-full max-w-full object-contain rounded-lg shadow-md cursor-zoom-in"
                   />
                 )
               ) : (
@@ -716,10 +716,10 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
       </div>
       {imageLightboxOpen && activeImg?.base64 && activeImg.mimeType !== 'application/pdf' && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label="عرض صورة الفاتورة كاملة" onClick={() => setImageLightboxOpen(false)}>
-          <div className="relative flex h-[92dvh] w-[92vw] items-center justify-center rounded-xl bg-black md:w-1/2" onClick={(event) => event.stopPropagation()}>
+          <div className="relative flex h-[58dvh] w-[94vw] items-center justify-center overflow-hidden rounded-xl bg-black p-2 md:h-[92dvh] md:w-1/2" onClick={(event) => event.stopPropagation()}>
             <button type="button" onClick={() => setImageLightboxOpen(false)} className="absolute right-2 top-2 z-10 rounded-lg bg-white/15 px-3 py-2 text-sm font-bold text-white">إغلاق</button>
             <button type="button" onClick={() => setImageRotation((angle) => (angle + 90) % 360)} className="absolute left-2 top-2 z-10 rounded-lg bg-white/15 px-3 py-2 text-sm font-bold text-white">تدوير 90°</button>
-            <img src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`} alt="صورة الفاتورة كاملة" className="max-h-full max-w-full object-contain" style={{ transform: `rotate(${imageRotation}deg)` }} />
+            <img src={`data:${activeImg.mimeType || 'image/jpeg'};base64,${activeImg.base64}`} alt="صورة الفاتورة كاملة" className="h-full w-full max-h-full max-w-full object-contain" style={{ transform: `rotate(${imageRotation}deg)`, maxWidth: imageRotation % 180 === 90 ? "58dvh" : "100%", maxHeight: imageRotation % 180 === 90 ? "94vw" : "100%" }} />
           </div>
         </div>
       )}
