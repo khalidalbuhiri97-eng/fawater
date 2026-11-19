@@ -51,7 +51,11 @@ export const DynamicTemplateFields: React.FC<DynamicTemplateFieldsProps> = ({
       case 'grandTotal':
         return invoice.grandTotal;
       case 'paymentMethod':
-        return invoice.customFieldsValues?.__official_payment_method || '';
+        return invoice.customFieldsValues?.__official_payment_method
+          ?? invoice.customFieldsValues?.paymentMethod
+          ?? invoice.customFieldsValues?.payment_method
+          ?? (invoice as InvoiceRecord & { paymentMethod?: string }).paymentMethod
+          ?? '';
       case 'operationNumber':
         return '#';
       default:

@@ -931,7 +931,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               draggable={false}
               src={`data:${manualImage.mimeType};base64,${manualImage.base64}`}
               alt="صورة الفاتورة مكبرة"
-              style={{ transform: `rotate(${manualRotation}deg) scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxHeight: "100%", maxWidth: "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
+              style={{ transform: `rotate(${manualRotation}deg) scale(${manualZoom})`, transformOrigin: "center center", transition: "transform 0.08s linear", maxWidth: manualRotation % 180 === 90 ? "calc(100dvh - 4rem)" : "100%", maxHeight: manualRotation % 180 === 90 ? "calc(100vw - 1rem)" : "100%", objectFit: "contain", pointerEvents: "none", userSelect: "none" }}
             />
           </div>
         </div>
