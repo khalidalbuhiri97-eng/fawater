@@ -1,8 +1,30 @@
 import { GoogleGenAI } from '@google/genai';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 
-// Use the quota-friendly Flash-Lite model by default; allow an explicit server-side override.
-export const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite';
+// Use Gemini 3.5 Flash-Lite by default; allow an explicit valid server-side override.
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const VALID_GEMINI_MODEL_REGEX = /^gemini-[a-z0-9][a-z0-9._-]*$/i;
+let warnedInvalidModel = false;
+
+export function resolveGeminiModel(rawModel = process.env.GEMINI_MODEL): string {
+  const cleaned = (rawModel || '')
+    .trim()
+    .replace(/^["'\s]+|["'\s]+$/g, '')
+    .replace(/^(?:models\/)+/i, '')
+    .trim();
+  if (!cleaned || !VALID_GEMINI_MODEL_REGEX.test(cleaned)) {
+    if (cleaned && !warnedInvalidModel) {
+      warnedInvalidModel = true;
+      console.warn(
+        `[geminiExtractor] Ignoring invalid GEMINI_MODEL override; falling back to ${DEFAULT_GEMINI_MODEL}.`
+      );
+    }
+    return DEFAULT_GEMINI_MODEL;
+  }
+  return cleaned;
+}
+
+export const GEMINI_MODEL = resolveGeminiModel();
 export const MAX_IMAGE_BYTES = 15 * 1024 * 1024; // 15 MB
 export const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -88,6 +110,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string,
 
 export async function logAiExtraction(params: {
   invoiceId?: string;
+  modelName?: string;
   status: 'success' | 'failed';
   errorMessage?: string;
   extractedData?: any;
@@ -100,7 +123,7 @@ export async function logAiExtraction(params: {
     await client.from('ai_extraction_logs').insert({
       invoice_id: params.invoiceId,
       provider: 'gemini',
-      model_name: GEMINI_MODEL,
+      model_name: params.modelName || resolveGeminiModel(),
       status: params.status,
       error_message: params.errorMessage || null,
       extracted_data: params.extractedData || null,
@@ -173,6 +196,7 @@ export async function extractInvoiceWithGemini(
   const normalizedManualType = normalizeDocumentType(manualDocumentType);
   const hasManualClassification =
     normalizedManualType === 'مبيعات' || normalizedManualType === 'مشتريات';
+  const activeModel = resolveGeminiModel();
 
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -258,7 +282,7 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
       try {
         response = await withTimeout(
           ai.models.generateContent({
-            model: GEMINI_MODEL,
+            model: activeModel,
             contents: {
               parts: [
                 {
@@ -361,6 +385,7 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
 
     await logAiExtraction({
       invoiceId,
+      modelName: activeModel,
       status: 'success',
       extractedData: sanitized,
       processingTimeMs: Date.now() - startedAt,
@@ -373,16 +398,20 @@ ${customFieldNames ? `الحقول الإضافية المطلوبة: ${customFi
     let diagnosticStatus = rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500;
     if (rawStatus === 403 || /PERMISSION_DENIED|API key not valid|permission denied/i.test(errMsg)) {
       diagnosticStatus = 403;
-      errMsg = `رفضت Google Gemini الطلب (403). تحقق من صلاحية GEMINI_API_KEY وتفعيل Gemini API للمشروع، ولا تستخدم مفتاح Supabase مكانه. النموذج المضبوط: ${GEMINI_MODEL}.`;
-    } else if (rawStatus === 404 || /model.*not found|not found.*model/i.test(errMsg)) {
-      diagnosticStatus = 404;
-      errMsg = `لم يتم العثور على نموذج Gemini "${GEMINI_MODEL}". تحقق من اسم النموذج وصلاحية الوصول إليه لهذا المفتاح.`;
+      errMsg = `رفضت Google Gemini الطلب (403). تحقق من صلاحية GEMINI_API_KEY وتفعيل Gemini API للمشروع، ولا تستخدم مفتاح Supabase مكانه. النموذج المضبوط: ${activeModel}.`;
+    } else if (
+      rawStatus === 404 ||
+      /model.*not found|not found.*model|unexpected model name format/i.test(errMsg)
+    ) {
+      diagnosticStatus = rawStatus === 400 ? 400 : 404;
+      errMsg = `اسم نموذج Gemini "${activeModel}" غير مدعوم أو صيغته غير صالحة. استخدم اسماً صحيحاً مثل ${DEFAULT_GEMINI_MODEL}.`;
     } else if (rawStatus === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(errMsg)) {
       diagnosticStatus = 429;
       errMsg = 'تم بلوغ حصة Gemini أو حد الطلبات مؤقتاً (429). سيُعاد تشغيل المهام وفق سياسة المحاولة المحدودة؛ خفّض حجم الدفعات وانتظر تجدد الحصة.';
     }
     await logAiExtraction({
       invoiceId,
+      modelName: activeModel,
       status: 'failed',
       errorMessage: errMsg,
       processingTimeMs: Date.now() - startedAt,
