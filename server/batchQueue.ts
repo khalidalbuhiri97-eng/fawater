@@ -5,6 +5,7 @@ import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { extractInvoiceWithGemini, normalizeMimeType, stripDataUrlPrefix } from './geminiExtractor.js';
 import { generateOfficialExcelOnServer, ServerExportEntry } from './excelServerExporter.js';
 import { normalizeInvoiceDate } from './dateUtils.js';
+import { findDuplicateInvoiceServer } from './invoiceDeduplication.js';
 
 export type TaskProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
@@ -373,31 +374,40 @@ export class ServerBatchQueueManager {
     }
   }
 
-  private async registerExistingAttachmentToSupabase(params: {
-    organizationId: string;
-    invoiceId: string;
+  private async verifyUploadedStorageFile(params: {
     storagePath: string;
-    mimeType: string;
-    fileName: string;
-    fileSize: number;
-  }): Promise<{ ok: boolean; storagePath?: string; warning?: string }> {
+    reportedSize?: number;
+  }): Promise<{ ok: boolean; fileSize: number; warning?: string }> {
     const client = getSupabaseAdmin();
-    if (!client) return { ok: false, warning: 'Supabase غير مهيأ' };
+    if (!client) return { ok: false, fileSize: 0, warning: 'Supabase غير مهيأ' };
     try {
-      const { data: blob, error: downloadError } = await client.storage.from('invoice-images').download(params.storagePath);
-      if (downloadError || !blob) return { ok: false, warning: downloadError?.message || 'الصورة غير موجودة في Storage.' };
-      if (blob.size <= 0 || blob.size > 15 * 1024 * 1024) return { ok: false, warning: 'حجم الصورة المخزنة غير صالح.' };
-      const { error } = await client.from('invoice_attachments').upsert({
-        invoice_id: params.invoiceId,
-        storage_path: params.storagePath,
-        file_name: params.fileName,
-        mime_type: params.mimeType,
-        file_size: blob.size || params.fileSize,
-      }, { onConflict: 'invoice_id,storage_path' });
-      if (error) return { ok: false, warning: error.message };
-      return { ok: true, storagePath: params.storagePath };
+      const bucket = client.storage.from('invoice-images');
+      const { data: infoData, error: infoError } = await bucket.info(params.storagePath);
+      if (!infoError && infoData) {
+        const size = Number(infoData.size ?? infoData.metadata?.size ?? params.reportedSize ?? 0);
+        if (size <= 0 || size > 15 * 1024 * 1024) {
+          return { ok: false, fileSize: size, warning: 'حجم الصورة المخزنة غير صالح أو يتجاوز 15 ميغابايت.' };
+        }
+        return { ok: true, fileSize: size };
+      }
+
+      // Fallback metadata check if .info() is unavailable on the storage gateway
+      const { data: existsData, error: existsError } = await bucket.exists(params.storagePath);
+      if (!existsError && existsData) {
+        const fallbackSize = Number(params.reportedSize || 0);
+        if (fallbackSize <= 0 || fallbackSize > 15 * 1024 * 1024) {
+          return { ok: false, fileSize: fallbackSize, warning: 'حجم الصورة المخزنة غير صالح أو يتجاوز 15 ميغابايت.' };
+        }
+        return { ok: true, fileSize: fallbackSize };
+      }
+
+      return {
+        ok: false,
+        fileSize: 0,
+        warning: infoError?.message || existsError?.message || 'الصورة المرفوعة غير موجودة في التخزين الآمن.',
+      };
     } catch (err: any) {
-      return { ok: false, warning: err?.message || 'فشل تسجيل مرفق الفاتورة.' };
+      return { ok: false, fileSize: 0, warning: err?.message || 'فشل التحقق من ملف الفاتورة في Storage.' };
     }
   }
 
@@ -566,12 +576,14 @@ export class ServerBatchQueueManager {
 
     // Re-queue unfinished work after process restarts. Images are recovered from private Supabase Storage.
     for (const batch of this.state.aiBatches) {
+      let batchModified = false;
       for (const item of batch.items) {
         if (item.status === 'completed' || item.status === 'failed') continue;
         if (!item.storagePath) {
           item.status = 'failed';
           item.errorMessage = 'ملف الفاتورة غير محفوظ في التخزين السحابي؛ أعد رفعه.';
           item.updatedAt = new Date().toISOString();
+          batchModified = true;
           continue;
         }
         if (item.status === 'processing') {
@@ -579,13 +591,16 @@ export class ServerBatchQueueManager {
           const lockIsRecent = Number.isFinite(lastLock) && Date.now() - lastLock < 90 * 1000;
           if (lockIsRecent) continue;
           item.status = 'pending';
+          batchModified = true;
         }
         if (!this.aiQueue.some((queued) => queued.batchId === batch.batchId && queued.invoiceId === item.invoiceId)) {
           this.aiQueue.push({ batchId: batch.batchId, invoiceId: item.invoiceId });
           recoveredAiItems++;
         }
       }
-      await this.saveAiBatchToSupabase(batch);
+      if (batchModified) {
+        await this.saveAiBatchToSupabase(batch);
+      }
     }
 
     for (const job of this.state.exportJobs) {
@@ -631,11 +646,13 @@ export class ServerBatchQueueManager {
       mimeType?: string;
       fileName: string;
       fileSize?: number;
+      fileSha256?: string;
       manualDocumentType?: 'auto' | 'مبيعات' | 'مشتريات';
     }>;
   }): Promise<{
     batch: AiBatchState;
     initialInvoices: any[];
+    skippedDuplicates: number;
   }> {
     await this.ensureDirs();
     const batchId = crypto.randomUUID();
@@ -651,19 +668,26 @@ export class ServerBatchQueueManager {
         : [],
     };
 
+    const client = getSupabaseAdmin();
+    if (!client) {
+      throw new Error('اتصال Supabase الإداري غير مهيأ.');
+    }
+
     const items: AiBatchItemState[] = [];
     const initialInvoices: any[] = [];
+    const invoiceRows: any[] = [];
+    const attachmentRows: any[] = [];
     let allSupabaseSynced = true;
     let firstWarning: string | undefined;
 
-    for (const f of params.files) {
+    // 1. Validate all files & metadata first without redundant downloads
+    const preparedFiles = params.files.map((f) => {
       const invoiceId = f.invoiceId && UUID_REGEX.test(f.invoiceId) ? f.invoiceId : crypto.randomUUID();
       const safeMime = normalizeMimeType(f.mimeType, f.fileName);
       if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(safeMime)) {
         throw new Error(`نوع الملف "${f.fileName}" غير مدعوم.`);
       }
-
-      const manualChoice =
+      const manualChoice: 'auto' | 'مبيعات' | 'مشتريات' =
         f.manualDocumentType === 'مبيعات' || f.manualDocumentType === 'مشتريات'
           ? f.manualDocumentType
           : 'auto';
@@ -671,36 +695,131 @@ export class ServerBatchQueueManager {
         manualChoice === 'مبيعات' || manualChoice === 'مشتريات'
           ? manualChoice
           : 'يحتاج تحديد النوع';
-
-      let storagePath = String(f.storagePath || '').trim();
-      let buffer: Buffer | undefined;
-      let relPath: string | undefined;
-
+      const storagePath = String(f.storagePath || '').trim();
       if (storagePath) {
         const safeName = (f.fileName || 'invoice').replace(/[^a-zA-Z0-9._-]/g, '_') || 'invoice';
         const expectedPath = `${orgId}/${invoiceId}/${safeName}`;
         if (storagePath !== expectedPath) {
           throw new Error('مسار الصورة لا يطابق المؤسسة والفاتورة المحددتين.');
         }
-        const storageClient = getSupabaseAdmin();
-        if (!storageClient) throw new Error('اتصال Supabase الإداري غير مهيأ.');
-        const { data: storedBlob, error: storedError } = await storageClient.storage
-          .from('invoice-images')
-          .download(storagePath);
-        if (storedError || !storedBlob) throw new Error(storedError?.message || 'الصورة المرفوعة غير موجودة في التخزين الآمن.');
-        if (storedBlob.size <= 0 || storedBlob.size > 15 * 1024 * 1024) {
-          throw new Error('حجم الصورة المخزنة غير صالح أو يتجاوز 15 ميغابايت.');
-        }
-      } else if (f.imageBase64) {
+      } else if (!f.imageBase64) {
+        throw new Error(`لم يتم رفع ملف الفاتورة "${f.fileName}" إلى التخزين.`);
+      }
+      const fileSha256 = typeof f.fileSha256 === 'string' && /^[0-9a-f]{64}$/i.test(f.fileSha256.trim())
+        ? f.fileSha256.trim().toLowerCase()
+        : '';
+      return { f, invoiceId, safeMime, manualChoice, initialDocType, storagePath, fileSha256 };
+    });
+
+    // 1b. Deduplicate against existing invoices/attachments in the same operation AND within the batch
+    const existingHashes = new Set<string>();
+    const existingNameSizes = new Set<string>();
+    const makeNameSizeKey = (name?: string, size?: number) => {
+      const n = String(name || '').trim().toLowerCase();
+      const s = Number(size || 0);
+      return n && s > 0 ? `${n}::${s}` : '';
+    };
+
+    const { data: existingOrgInvoices } = await client
+      .from('invoices')
+      .select('id, extra_columns_data, invoice_attachments(file_name, file_size)')
+      .eq('organization_id', orgId);
+
+    for (const row of existingOrgInvoices || []) {
+      const sha = row?.extra_columns_data?.imageSha256;
+      if (typeof sha === 'string' && sha.trim()) existingHashes.add(sha.trim().toLowerCase());
+      for (const att of row?.invoice_attachments || []) {
+        const key = makeNameSizeKey(att?.file_name, att?.file_size);
+        if (key) existingNameSizes.add(key);
+      }
+    }
+
+    const uniquePreparedFiles: typeof preparedFiles = [];
+    const duplicateStoragePaths: string[] = [];
+    for (const entry of preparedFiles) {
+      const nameSizeKey = makeNameSizeKey(entry.f.fileName, entry.f.fileSize);
+      const isDuplicateHash = Boolean(entry.fileSha256 && existingHashes.has(entry.fileSha256));
+      const isDuplicateNameSize = Boolean(nameSizeKey && existingNameSizes.has(nameSizeKey));
+      if (isDuplicateHash || isDuplicateNameSize) {
+        if (entry.storagePath) duplicateStoragePaths.push(entry.storagePath);
+        continue;
+      }
+      if (entry.fileSha256) existingHashes.add(entry.fileSha256);
+      if (nameSizeKey) existingNameSizes.add(nameSizeKey);
+      uniquePreparedFiles.push(entry);
+    }
+
+    if (duplicateStoragePaths.length > 0) {
+      await client.storage.from('invoice-images').remove(duplicateStoragePaths).catch(() => {});
+    }
+
+    const skippedDuplicates = preparedFiles.length - uniquePreparedFiles.length;
+    if (uniquePreparedFiles.length === 0) {
+      throw new Error(
+        'جميع الصور المختارة مكررة وموجودة مسبقاً في هذه العملية. يمكنك حذف الفواتير أو العمليات السابقة أولاً إذا أردت إعادة رفعها.'
+      );
+    }
+
+    // 2. Verify pre-uploaded storage files in parallel metadata waves (0 bytes downloaded)
+    const storageEntries = uniquePreparedFiles.filter((p) => Boolean(p.storagePath));
+    const verifiedSizes = new Map<string, number>();
+    const VERIFY_CONCURRENCY = 10;
+    for (let i = 0; i < storageEntries.length; i += VERIFY_CONCURRENCY) {
+      const chunk = storageEntries.slice(i, i + VERIFY_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map(async (entry) => {
+          const check = await this.verifyUploadedStorageFile({
+            storagePath: entry.storagePath,
+            reportedSize: entry.f.fileSize,
+          });
+          if (!check.ok) {
+            throw new Error(check.warning || `تعذر التحقق من "${entry.f.fileName}" في Storage.`);
+          }
+          return { invoiceId: entry.invoiceId, fileSize: check.fileSize };
+        })
+      );
+      for (const r of results) verifiedSizes.set(r.invoiceId, r.fileSize);
+    }
+
+    // 3. Upsert organization ONCE before writing invoices
+    const { error: orgErr } = await client.from('organizations').upsert(
+      {
+        id: orgMeta.id,
+        name: orgMeta.name,
+        activity_type: orgMeta.activityType,
+        excel_file_name: orgMeta.excelFileName,
+      },
+      { onConflict: 'id' }
+    );
+    if (orgErr) throw new Error(orgErr.message || 'تعذر حفظ بيانات المؤسسة في Supabase.');
+
+    // 4. Handle any direct base64 uploads (legacy fallback) & build batch DB rows
+    for (const entry of uniquePreparedFiles) {
+      const { f, invoiceId, safeMime, manualChoice, initialDocType, fileSha256 } = entry;
+      let storagePath = entry.storagePath;
+      let buffer: Buffer | undefined;
+      let relPath: string | undefined;
+      let resolvedSize = verifiedSizes.get(invoiceId) ?? Number(f.fileSize || 0);
+      const extraColumnsData = fileSha256 ? { imageSha256: fileSha256 } : {};
+
+      if (!storagePath && f.imageBase64) {
         const cleanBase64 = stripDataUrlPrefix(f.imageBase64);
         buffer = Buffer.from(cleanBase64, 'base64');
         if (buffer.byteLength <= 0 || buffer.byteLength > 15 * 1024 * 1024) {
           throw new Error('حجم ملف الفاتورة غير صالح أو يتجاوز 15 ميغابايت.');
         }
+        resolvedSize = buffer.byteLength;
         relPath = `${invoiceId}.bin`;
         await fs.writeFile(path.join(UPLOADS_DIR, relPath), buffer);
-      } else {
-        throw new Error(`لم يتم رفع ملف الفاتورة "${f.fileName}" إلى التخزين.`);
+
+        const ext = safeMime.split('/')[1] || 'jpg';
+        const safeName = (f.fileName || `invoice.${ext}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const targetPath = `${orgId}/${invoiceId}/${safeName}`;
+        const { error: upErr } = await client.storage
+          .from('invoice-images')
+          .upload(targetPath, buffer, { contentType: safeMime, upsert: true });
+        if (upErr) throw new Error(upErr.message || 'تعذر رفع الصورة إلى Storage.');
+        storagePath = targetPath;
       }
 
       const initialInvoice = {
@@ -723,63 +842,65 @@ export class ServerBatchQueueManager {
         notes: '',
         items: [],
         customFieldsValues: {},
-        extraColumnsData: {},
+        extraColumnsData,
         status: 'لم تبدأ',
         processingStatus: 'pending' as TaskProcessingStatus,
         hasImage: true,
-        storagePath: undefined as string | undefined,
+        storagePath,
         imageFileName: f.fileName,
         imageMimeType: safeMime,
-        imageFileSize: f.fileSize || buffer?.byteLength || 0,
-        syncStatus: 'pending',
+        imageFileSize: resolvedSize,
+        syncStatus: 'synced',
         createdAt: nowIso.split('T')[0],
         updatedAt: nowIso,
       };
 
-      const invSaveRes = await this.upsertOrganizationAndInvoiceToSupabase({
-        organization: orgMeta,
-        invoice: initialInvoice,
+      invoiceRows.push({
+        id: invoiceId,
+        organization_id: orgId,
+        document_type: initialDocType,
+        entry_method: 'ai',
+        invoice_number: '',
+        invoice_date: null,
+        day: '',
+        issuer_name: '',
+        client_name: '',
+        issuer_tax_id: '',
+        client_tax_id: '',
+        currency: '',
+        subtotal: null,
+        tax_amount: null,
+        tax_rate: null,
+        discount: null,
+        grand_total: null,
+        cash_sales: null,
+        network_sales: null,
+        cash_balance: null,
+        cash_box_balance: null,
+        network_balance: null,
+        balance: null,
+        notes: '',
+        classification_reason: '',
+        status: 'لم تبدأ',
+        error_message: null,
+        custom_fields_values: {},
+        extra_columns_data: extraColumnsData,
+        updated_at: nowIso,
       });
-      if (!invSaveRes.ok) throw new Error(invSaveRes.warning || 'تعذر إنشاء سجل الفاتورة في Supabase.');
 
-      let uploadRes: { ok: boolean; storagePath?: string; warning?: string };
-      if (storagePath) {
-        uploadRes = await this.registerExistingAttachmentToSupabase({
-          organizationId: orgId,
-          invoiceId,
-          storagePath,
-          mimeType: safeMime,
-          fileName: f.fileName,
-          fileSize: f.fileSize || 0,
-        });
-      } else {
-        uploadRes = await this.uploadAttachmentToSupabase({
-          organizationId: orgId,
-          invoiceId,
-          buffer: buffer!,
-          mimeType: safeMime,
-          fileName: f.fileName,
-        });
-      }
-      if (!uploadRes.ok || !uploadRes.storagePath) {
-        throw new Error(uploadRes.warning || 'تعذر تسجيل صورة الفاتورة في Supabase Storage.');
-      }
-      storagePath = uploadRes.storagePath;
-      initialInvoice.storagePath = storagePath;
-      initialInvoice.syncStatus = 'synced';
-      const invoicePathSave = await this.upsertOrganizationAndInvoiceToSupabase({
-        organization: orgMeta,
-        invoice: initialInvoice,
+      attachmentRows.push({
+        invoice_id: invoiceId,
+        storage_path: storagePath,
+        file_name: f.fileName,
+        mime_type: safeMime,
+        file_size: resolvedSize,
       });
-      if (!invoicePathSave.ok) {
-        throw new Error(invoicePathSave.warning || 'تعذر حفظ مسار صورة الفاتورة بعد رفعها.');
-      }
 
       items.push({
         invoiceId,
         fileName: f.fileName,
         mimeType: safeMime,
-        fileSize: f.fileSize || buffer?.byteLength || 0,
+        fileSize: resolvedSize,
         manualDocumentType: manualChoice,
         status: 'pending',
         attempts: 0,
@@ -789,6 +910,18 @@ export class ServerBatchQueueManager {
         updatedAt: nowIso,
       });
       initialInvoices.push(initialInvoice);
+    }
+
+    // 5. Batch upsert all invoices & attachments in 2 queries instead of 250+ sequential queries
+    if (invoiceRows.length > 0) {
+      const { error: invBatchErr } = await client.from('invoices').upsert(invoiceRows, { onConflict: 'id' });
+      if (invBatchErr) throw new Error(invBatchErr.message || 'تعذر إنشاء سجلات الفواتير في Supabase.');
+    }
+    if (attachmentRows.length > 0) {
+      const { error: attBatchErr } = await client
+        .from('invoice_attachments')
+        .upsert(attachmentRows, { onConflict: 'invoice_id,storage_path' });
+      if (attBatchErr) throw new Error(attBatchErr.message || 'تعذر تسجيل مرفقات الفواتير في Supabase.');
     }
 
     const batch: AiBatchState = {
@@ -827,7 +960,78 @@ export class ServerBatchQueueManager {
     // Vercel requests register the worker with waitUntil in the API handler; persistent servers start it here.
     if (!process.env.VERCEL) void this.processAiQueue();
 
-    return { batch, initialInvoices };
+    return { batch, initialInvoices, skippedDuplicates };
+  }
+
+  public async removeOrganizationQueues(organizationId: string): Promise<void> {
+    const removedAiBatchIds = this.state.aiBatches
+      .filter((b) => b.organizationId === organizationId)
+      .map((b) => b.batchId);
+    const removedExportIds = this.state.exportJobs
+      .filter((j) => j.organizationId === organizationId)
+      .map((j) => j.jobId);
+
+    this.state.aiBatches = this.state.aiBatches.filter((b) => b.organizationId !== organizationId);
+    this.state.exportJobs = this.state.exportJobs.filter((j) => j.organizationId !== organizationId);
+    const batchIdSet = new Set(removedAiBatchIds);
+    const exportIdSet = new Set(removedExportIds);
+    this.aiQueue = this.aiQueue.filter((q) => !batchIdSet.has(q.batchId));
+    this.exportQueue = this.exportQueue.filter((id) => !exportIdSet.has(id));
+
+    const client = getSupabaseAdmin();
+    if (client) {
+      const settingKeys = [
+        ...removedAiBatchIds.map((id) => `bg_ai_batch_${id}`),
+        ...removedExportIds.map((id) => `bg_export_job_${id}`),
+      ];
+      try {
+        if (settingKeys.length > 0) {
+          await client.from('app_settings').delete().in('setting_key', settingKeys);
+        }
+        await client.from('ai_processing_jobs').delete().eq('organization_id', organizationId);
+        await client.from('ai_processing_batches').delete().eq('organization_id', organizationId);
+      } catch {
+        // non-fatal cleanup fallback
+      }
+    }
+    await this.persistLocalState().catch(() => {});
+  }
+
+  public async removeInvoiceFromQueues(invoiceId: string): Promise<void> {
+    this.aiQueue = this.aiQueue.filter((q) => q.invoiceId !== invoiceId);
+    let changed = false;
+    const nowIso = new Date().toISOString();
+    for (const batch of this.state.aiBatches) {
+      const before = batch.items.length;
+      batch.items = batch.items.filter((i) => i.invoiceId !== invoiceId);
+      if (batch.items.length !== before) {
+        batch.updatedAt = nowIso;
+        changed = true;
+        if (batch.items.length === 0) {
+          const client = getSupabaseAdmin();
+          if (client) {
+            try {
+              await client.from('app_settings').delete().eq('setting_key', `bg_ai_batch_${batch.batchId}`);
+              await client.from('ai_processing_batches').delete().eq('id', batch.batchId);
+            } catch {
+              // non-fatal cleanup fallback
+            }
+          }
+        } else {
+          await this.saveAiBatchToSupabase(batch);
+        }
+      }
+    }
+    this.state.aiBatches = this.state.aiBatches.filter((b) => b.items.length > 0);
+    const client = getSupabaseAdmin();
+    if (client) {
+      try {
+        await client.from('ai_processing_jobs').delete().eq('invoice_id', invoiceId);
+      } catch {
+        // non-fatal cleanup fallback
+      }
+    }
+    if (changed) await this.persistLocalState().catch(() => {});
   }
 
   public async retryFailedAiBatchItems(batchId: string): Promise<AiBatchState | null> {
@@ -1084,6 +1288,45 @@ export class ServerBatchQueueManager {
             errorMessage: undefined,
             updatedAt: doneIso,
           };
+
+          try {
+            const orgPool: any[] = [];
+            for (const b of this.state.aiBatches) {
+              if (b.organizationId !== batch.organizationId) continue;
+              for (const otherItem of b.items) {
+                if (
+                  otherItem.invoiceId !== item.invoiceId &&
+                  otherItem.status === 'completed' &&
+                  otherItem.invoiceRecord
+                ) {
+                  orgPool.push(otherItem.invoiceRecord);
+                }
+              }
+            }
+            const sbClient = getSupabaseAdmin();
+            if (sbClient) {
+              const { data: existingRows } = await sbClient
+                .from('invoices')
+                .select(
+                  'id, document_type, invoice_number, invoice_date, issuer_name, issuer_tax_id, subtotal, tax_amount, grand_total, cash_sales, network_sales, extra_columns_data, status'
+                )
+                .eq('organization_id', batch.organizationId)
+                .neq('id', item.invoiceId)
+                .neq('status', 'فشل');
+              for (const row of existingRows || []) {
+                orgPool.push(row);
+              }
+            }
+            const dupCheck = findDuplicateInvoiceServer(completedRecord, orgPool);
+            if (dupCheck.isDuplicate) {
+              const prefix = `تنبيه تكرار (مستبعدة من Excel): ${dupCheck.reason || 'مطابقة لفاتورة سابقة'}`;
+              completedRecord.classificationReason = completedRecord.classificationReason
+                ? `${prefix} — ${completedRecord.classificationReason}`
+                : prefix;
+            }
+          } catch {
+            // non-fatal duplicate annotation
+          }
 
           const dbSave = await this.upsertOrganizationAndInvoiceToSupabase({
             organization: {

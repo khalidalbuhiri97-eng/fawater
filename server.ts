@@ -210,10 +210,11 @@ export async function createServerApp() {
         return res.status(403).json({ success: false, error: 'ليس لديك صلاحية تحليل فواتير هذه المؤسسة.' });
       }
       const staffRoles = ['owner','admin','accountant','sales','employee'];
-      if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && role !== 'owner') {
+      const isClearingOrgInvoices = req.method === 'DELETE' && /^\/supabase\/organizations\/[^/]+\/invoices$/.test(req.path);
+      if (req.method === 'DELETE' && req.path.startsWith('/supabase/organizations/') && !isClearingOrgInvoices && role !== 'owner') {
         return res.status(403).json({ success: false, error: 'حذف المؤسسة متاح للمالك فقط.' });
       }
-      if (req.method === 'DELETE' && req.path.startsWith('/supabase/invoices/') && !isOwnerAdmin) {
+      if ((isClearingOrgInvoices || (req.method === 'DELETE' && req.path.startsWith('/supabase/invoices/'))) && !isOwnerAdmin) {
         return res.status(403).json({ success: false, error: 'حذف الفواتير متاح للمالك أو المدير فقط.' });
       }
       if (req.path === '/supabase/invoices' && !staffRoles.includes(role as string)) {
@@ -343,12 +344,15 @@ export async function createServerApp() {
         supabaseSynced: queued.batch.supabaseSynced,
         supabaseWarning: queued.batch.supabaseWarning,
         initialInvoices: queued.initialInvoices,
+        skippedDuplicates: queued.skippedDuplicates,
       });
     } catch (error: any) {
       console.error('[background-ai] enqueue failed:', error?.message || error);
-      return res.status(500).json({
+      const errMsg = error?.message || 'تعذر حفظ الفواتير في طابور المعالجة الخلفية.';
+      const status = errMsg.includes('مكررة') ? 409 : 500;
+      return res.status(status).json({
         success: false,
-        error: error?.message || 'تعذر حفظ الفواتير في طابور المعالجة الخلفية.',
+        error: errMsg,
       });
     }
   });
@@ -594,6 +598,7 @@ export async function createServerApp() {
       }
 
       // Delete dependent records explicitly in safe order (since schema uses ON DELETE RESTRICT on orgs)
+      await batchQueue.removeOrganizationQueues(id);
       const { error: auditDelErr } = await client.from('audit_logs').delete().eq('organization_id', id);
       if (auditDelErr) throw auditDelErr;
       const { error: batchDelErr } = await client.from('export_batches').delete().eq('organization_id', id);
@@ -610,6 +615,47 @@ export async function createServerApp() {
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'فشل حذف المؤسسة من Supabase' });
+    }
+  });
+
+  app.delete('/api/supabase/organizations/:id/invoices', async (req, res) => {
+    const client = requireSupabaseOr503(res);
+    if (!client) return;
+
+    const { id } = req.params;
+    if (!UUID_REGEX.test(id)) {
+      return res.status(400).json({ success: false, error: 'معرف المؤسسة غير صالح.' });
+    }
+
+    try {
+      const { data: invs, error: invListErr } = await client
+        .from('invoices')
+        .select('id')
+        .eq('organization_id', id);
+      if (invListErr) throw invListErr;
+      const invIds = (invs || []).map((r) => r.id);
+
+      if (invIds.length > 0) {
+        const { data: atts } = await client
+          .from('invoice_attachments')
+          .select('storage_path')
+          .in('invoice_id', invIds);
+        const paths = (atts || []).map((a) => a.storage_path).filter(Boolean);
+        if (paths.length > 0) {
+          await client.storage.from('invoice-images').remove(paths);
+        }
+      }
+
+      await batchQueue.removeOrganizationQueues(id);
+
+      if (invIds.length > 0) {
+        const { error: delErr } = await client.from('invoices').delete().eq('organization_id', id);
+        if (delErr) throw delErr;
+      }
+
+      res.json({ success: true, deletedCount: invIds.length });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'فشل حذف فواتير العملية من Supabase' });
     }
   });
 
@@ -765,6 +811,7 @@ export async function createServerApp() {
       if (paths.length > 0) {
         await client.storage.from('invoice-images').remove(paths);
       }
+      await batchQueue.removeInvoiceFromQueues(id);
       const { error } = await client.from('invoices').delete().eq('id', id);
       if (error) throw error;
       res.json({ success: true });

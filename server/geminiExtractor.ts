@@ -258,6 +258,7 @@ export async function extractInvoiceWithGemini(
     const prompt = `استخرج بيانات المستند المرفق كـ JSON فقط، دون شرح.
 السياق: ${organizationName || 'مؤسسة'}؛ النشاط: ${activityType || 'تجاري'}.
 ${typeInstruction}
+قاعدة إلزامية لتراكب الفواتير: إذا ظهرت في الصورة فاتورة فوق أخرى أو أكثر من إيصال متراكب (ورق فوق ورق): اعتمد واستخرج بيانات الفاتورة العليا الظاهرة في المقدمة فقط، واترك الفاتورة السفلية أو الخلفية تماماً ولا تأخذ منها أي رقم أو تاريخ أو اسم أو ضريبة أو إجمالي.
 المفاتيح:
 documentType, classificationReason, invoiceNumber, invoiceDate(YYYY-MM-DD), day(عربي),
 issuerName, paymentMethod, clientName, issuerTaxId, clientTaxId, currency,

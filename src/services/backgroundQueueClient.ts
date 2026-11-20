@@ -22,6 +22,7 @@ export async function enqueueAiBackgroundBatch(params: {
     mimeType: string;
     fileName: string;
     fileSize: number;
+    fileSha256?: string;
     manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
   }>;
   onProgress?: (completed: number, total: number, fileName: string) => void;
@@ -30,6 +31,7 @@ export async function enqueueAiBackgroundBatch(params: {
   supabaseSynced: boolean;
   supabaseWarning?: string;
   initialInvoices: InvoiceRecord[];
+  skippedDuplicates: number;
 }> {
   const bootstrapRes = await authenticatedFetch('/api/supabase/bootstrap', { cache: 'no-store' });
   if (bootstrapRes.ok) {
@@ -59,23 +61,39 @@ export async function enqueueAiBackgroundBatch(params: {
 
   const storage = getSupabaseBrowserClient().storage.from('invoice-images');
   const uploadedFiles: Array<{
-    invoiceId: string; storagePath: string; mimeType: string; fileName: string; fileSize: number;
+    invoiceId: string; storagePath: string; mimeType: string; fileName: string; fileSize: number; fileSha256?: string;
     manualDocumentType: 'auto' | 'مبيعات' | 'مشتريات';
-  }> = [];
+  }> = new Array(params.files.length);
 
-  for (let index = 0; index < params.files.length; index++) {
-    const item = params.files[index];
-    if (item.fileSize <= 0 || item.fileSize > 15 * 1024 * 1024) throw new Error(`حجم الملف "${item.fileName}" غير صالح أو يتجاوز 15 ميغابايت.`);
-    const safeName = item.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'invoice';
-    const storagePath = `${params.organization.id}/${item.invoiceId}/${safeName}`;
-    const { error } = await storage.upload(storagePath, item.file, { contentType: item.mimeType, upsert: false });
-    if (error) throw new Error(`تعذر رفع "${item.fileName}" إلى التخزين الآمن: ${error.message}`);
-    uploadedFiles.push({
-      invoiceId: item.invoiceId, storagePath, mimeType: item.mimeType, fileName: item.fileName,
-      fileSize: item.fileSize, manualDocumentType: item.manualDocumentType,
-    });
-    params.onProgress?.(index + 1, params.files.length, item.fileName);
+  for (const item of params.files) {
+    if (item.fileSize <= 0 || item.fileSize > 15 * 1024 * 1024) {
+      throw new Error(`حجم الملف "${item.fileName}" غير صالح أو يتجاوز 15 ميغابايت.`);
+    }
   }
+
+  let completedUploads = 0;
+  let nextFileIndex = 0;
+  const UPLOAD_CONCURRENCY = Math.min(4, Math.max(1, params.files.length));
+
+  const runUploadWorker = async () => {
+    while (true) {
+      const index = nextFileIndex++;
+      if (index >= params.files.length) break;
+      const item = params.files[index];
+      const safeName = item.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'invoice';
+      const storagePath = `${params.organization.id}/${item.invoiceId}/${safeName}`;
+      const { error } = await storage.upload(storagePath, item.file, { contentType: item.mimeType, upsert: true });
+      if (error) throw new Error(`تعذر رفع "${item.fileName}" إلى التخزين الآمن: ${error.message}`);
+      uploadedFiles[index] = {
+        invoiceId: item.invoiceId, storagePath, mimeType: item.mimeType, fileName: item.fileName,
+        fileSize: item.fileSize, fileSha256: item.fileSha256, manualDocumentType: item.manualDocumentType,
+      };
+      completedUploads += 1;
+      params.onProgress?.(completedUploads, params.files.length, item.fileName);
+    }
+  };
+
+  await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, () => runUploadWorker()));
 
   const res = await authenticatedFetch('/api/background/ai-batches', {
     method: 'POST',
@@ -88,12 +106,40 @@ export async function enqueueAiBackgroundBatch(params: {
       files: uploadedFiles,
     }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.success) throw new Error(data.error || `تعذر جدولة التحليل (رمز ${res.status})`);
+  const data = await parseApiJsonResponse(res, 'تعذر جدولة التحليل');
   return {
-    batchId: data.batchId, supabaseSynced: Boolean(data.supabaseSynced),
-    supabaseWarning: data.supabaseWarning, initialInvoices: Array.isArray(data.initialInvoices) ? data.initialInvoices : [],
+    batchId: data.batchId,
+    supabaseSynced: Boolean(data.supabaseSynced),
+    supabaseWarning: data.supabaseWarning,
+    initialInvoices: Array.isArray(data.initialInvoices) ? data.initialInvoices : [],
+    skippedDuplicates: Number(data.skippedDuplicates || 0),
   };
+}
+
+async function parseApiJsonResponse(res: Response, fallbackLabel: string): Promise<any> {
+  const rawText = await res.text().catch(() => '');
+  let data: any = null;
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = null;
+    }
+  }
+  if (!res.ok || !data?.success) {
+    if (data?.error) {
+      throw new Error(data.error);
+    }
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    const looksLikeHtml = contentType.includes('text/html') || rawText.trimStart().startsWith('<');
+    if (res.status === 200 && (looksLikeHtml || !rawText.trim())) {
+      throw new Error(
+        `${fallbackLabel}: استجاب الخادم بـ ${looksLikeHtml ? 'صفحة HTML' : 'استجابة فارغة'} بدلاً من JSON (رمز 200). تحقق من انتهاء الجلسة أو من توجيه مسار /api في الاستضافة ثم أعد المحاولة.`
+      );
+    }
+    throw new Error(`${fallbackLabel} (رمز ${res.status})`);
+  }
+  return data;
 }
 
 export async function retryBackgroundAiBatch(batchId: string): Promise<void> {
@@ -126,10 +172,7 @@ export async function enqueueBackgroundExcelExport(params: {
       alreadyExportedIds: params.alreadyExportedIds,
     }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || `تعذر جدولة تصدير Excel في الخلفية (رمز ${res.status})`);
-  }
+  const data = await parseApiJsonResponse(res, 'تعذر جدولة تصدير Excel في الخلفية');
   return {
     jobId: data.jobId,
     batchId: data.batchId,

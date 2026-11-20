@@ -240,6 +240,7 @@ export default function App() {
         setActiveOperationId(null);
         setCurrentView('home');
       }
+      await pollBackgroundStatus();
     } catch (err: any) {
       setBanner({ type: 'error', text: err?.message || 'تعذر حذف العملية' });
     }

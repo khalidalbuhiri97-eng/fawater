@@ -65,7 +65,7 @@ export interface InvoiceRecord {
   notes: string;
   items: InvoiceItem[];
   customFieldsValues: Record<string, any>;
-  extraColumnsData?: Record<string, Record<string, string | number | undefined>>;
+  extraColumnsData?: Record<string, any>;
   status: InvoiceStatus;
   processingStatus?: ProcessingStatus;
   hasImage?: boolean;

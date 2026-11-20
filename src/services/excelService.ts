@@ -8,6 +8,7 @@ import {
 } from './templateService';
 import { getExportTracking, getSavedExportFile, recordExportBatch } from './dbService';
 import { generateUuid } from './localStore';
+import { findDuplicateInvoice } from './invoiceDeduplication';
 
 export interface ExportExecutionResult {
   buffer: Uint8Array;
@@ -242,6 +243,7 @@ export async function appendInvoicesToWorkbookBuffer(
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
 
   const seenIds = new Set<string>(alreadyExportedIds);
+  const exportedOrBlockedInvoices: InvoiceRecord[] = [];
   const entries: ExportTrackingEntry[] = [];
   let salesWritten = 0;
   let purchasesWritten = 0;
@@ -265,6 +267,12 @@ export async function appendInvoicesToWorkbookBuffer(
     }
 
     if (seenIds.has(inv.id)) {
+      exportedOrBlockedInvoices.push(inv);
+      skippedDuplicates++;
+      continue;
+    }
+
+    if (findDuplicateInvoice(inv, exportedOrBlockedInvoices).isDuplicate) {
       skippedDuplicates++;
       continue;
     }
@@ -321,6 +329,7 @@ export async function appendInvoicesToWorkbookBuffer(
       }
 
       seenIds.add(inv.id);
+      exportedOrBlockedInvoices.push(inv);
       entries.push({
         invoiceId: inv.id,
         operationId,
@@ -375,6 +384,7 @@ export async function appendInvoicesToWorkbookBuffer(
       }
 
       seenIds.add(inv.id);
+      exportedOrBlockedInvoices.push(inv);
       entries.push({
         invoiceId: inv.id,
         operationId,
@@ -405,6 +415,7 @@ export interface OperationExportSummary {
   modifiedReadyInvoices: InvoiceRecord[];
   alreadyExportedUnchangedInvoices: InvoiceRecord[];
   pendingInvoices: InvoiceRecord[];
+  duplicateInvoices?: InvoiceRecord[];
 }
 
 export function getOperationExportSummary(
@@ -421,6 +432,9 @@ export function getOperationExportSummary(
   const modifiedReadyInvoices: InvoiceRecord[] = [];
   const alreadyExportedUnchangedInvoices: InvoiceRecord[] = [];
   const pendingInvoices: InvoiceRecord[] = [];
+  const duplicateInvoices: InvoiceRecord[] = [];
+  const readyCandidates: InvoiceRecord[] = [];
+  const acceptedPool: InvoiceRecord[] = [];
 
   for (const inv of operation.invoices || []) {
     const isReady =
@@ -435,16 +449,31 @@ export function getOperationExportSummary(
 
     const prevEntry = entryMap.get(inv.id);
     if (!prevEntry && !exportedIdSet.has(inv.id)) {
-      newReadyInvoices.push(inv);
+      readyCandidates.push(inv);
     } else if (
       prevEntry &&
       prevEntry.invoiceUpdatedAt &&
       inv.updatedAt &&
       inv.updatedAt > prevEntry.invoiceUpdatedAt
     ) {
-      modifiedReadyInvoices.push(inv);
+      readyCandidates.push(inv);
     } else {
       alreadyExportedUnchangedInvoices.push(inv);
+      acceptedPool.push(inv);
+    }
+  }
+
+  for (const inv of readyCandidates) {
+    if (findDuplicateInvoice(inv, acceptedPool).isDuplicate) {
+      duplicateInvoices.push(inv);
+      continue;
+    }
+    acceptedPool.push(inv);
+    const prevEntry = entryMap.get(inv.id);
+    if (!prevEntry && !exportedIdSet.has(inv.id)) {
+      newReadyInvoices.push(inv);
+    } else {
+      modifiedReadyInvoices.push(inv);
     }
   }
 
@@ -453,6 +482,7 @@ export function getOperationExportSummary(
     modifiedReadyInvoices,
     alreadyExportedUnchangedInvoices,
     pendingInvoices,
+    duplicateInvoices,
   };
 }
 

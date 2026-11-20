@@ -8,7 +8,7 @@ import {
   Operation,
 } from '../types';
 import { clearLegacyTemplateCaches } from './templateService';
-import { getSupabaseBrowserClient } from '../auth/supabaseClient';
+import { authenticatedFetch, getSupabaseBrowserClient } from '../auth/supabaseClient';
 import {
   generateUuid,
   getAllExportTrackingFromStore,
@@ -17,6 +17,7 @@ import {
   hasIndexedDb,
   idbDelete,
   idbGet,
+  idbGetAll,
   idbPut,
   isValidUuid,
   readAllOrganizationsFromStore,
@@ -25,6 +26,7 @@ import {
   setMetaValue,
   STORE_NAMES,
   StoredImageRecord,
+  SyncQueueItem,
   toStableUuid,
   writeExportTrackingToStore,
 } from './localStore';
@@ -521,7 +523,63 @@ export async function deleteOperationConfirmed(id: string, confirmed: boolean): 
   await clearExportTracking(id);
   await idbDelete(STORE_NAMES.ORGANIZATIONS, id);
   await enqueueSyncTask('delete_organization', id, { id }, id);
-  syncAllPending().catch(() => {});
+  await syncAllPending().catch(() => {});
+}
+
+export async function clearOperationInvoicesConfirmed(operationId: string): Promise<Operation | null> {
+  const target = await getOperationById(operationId);
+  if (!target) return null;
+
+  const invIds = (target.invoices || []).map((inv) => inv.id);
+  for (const invId of invIds) {
+    await deleteInvoiceImage(invId);
+  }
+
+  // Drop any queued sync tasks for invoices/attachments in this organization
+  const queue = await idbGetAll<SyncQueueItem>(STORE_NAMES.SYNC_QUEUE);
+  for (const q of queue) {
+    if (
+      q.organizationId === operationId &&
+      (q.entityType === 'invoice' || q.entityType === 'attachment' || q.entityType === 'delete_invoice')
+    ) {
+      await idbDelete(STORE_NAMES.SYNC_QUEUE, q.key);
+    }
+  }
+
+  let clearedOnServer = false;
+  if (typeof navigator === 'undefined' || navigator.onLine) {
+    try {
+      const res = await authenticatedFetch(`/api/supabase/organizations/${encodeURIComponent(operationId)}/invoices`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        clearedOnServer = true;
+      } else if (res.status === 403) {
+        throw new Error(data?.error || 'حذف الفواتير متاح للمالك أو المدير فقط.');
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('المالك أو المدير')) throw err;
+    }
+  }
+
+  if (!clearedOnServer) {
+    for (const invId of invIds) {
+      await enqueueSyncTask('delete_invoice', invId, { id: invId }, operationId);
+    }
+  }
+
+  const updated: Operation = {
+    ...target,
+    invoices: [],
+    updatedAt: new Date().toISOString().split('T')[0],
+  };
+  await idbPut(STORE_NAMES.ORGANIZATIONS, updated);
+  await refreshSyncOverview();
+  if (!clearedOnServer) {
+    await syncAllPending().catch(() => {});
+  }
+  return updated;
 }
 
 export function createOperationObject(name: string, activityType: ActivityType): Operation {

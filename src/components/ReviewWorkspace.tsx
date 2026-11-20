@@ -12,10 +12,14 @@ import {
   AlertCircle,
   AlertTriangle,
   Image as ImageIcon,
+  FileSpreadsheet,
+  Loader2,
 } from 'lucide-react';
 import { InvoiceRecord, Operation, DocumentType } from '../types';
 import { getInvoiceImage, saveInvoiceImage } from '../services/dbService';
 import { generateUuid } from '../services/localStore';
+import { downloadOperationExcel } from '../services/excelService';
+import { findDuplicateInvoice } from '../services/invoiceDeduplication';
 import {
   getOfficialTemplate,
   getSheetSchemaByType,
@@ -55,6 +59,7 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const [imageRotation, setImageRotation] = useState(0);
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const [extractingSingle, setExtractingSingle] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
   const [aiClassifyHint, setAiClassifyHint] = useState<'auto' | 'مبيعات' | 'مشتريات'>('auto');
   const [templateSheets, setTemplateSheets] = useState<TemplateSheetInfo[]>([]);
   const [hydratedImages, setHydratedImages] = useState<Record<string, { base64: string; mimeType: string }>>({});
@@ -134,6 +139,14 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   const missingCashNetworkSplit =
     isSales && currentInvoice.cashSales === undefined && currentInvoice.networkSales === undefined;
 
+  const priorOrCompletedInvoices = invoices.filter(
+    (inv, idx) => inv.id !== currentInvoice.id && (inv.status === 'مكتملة' || idx < currentIndex)
+  );
+  const currentDuplicateMatch = findDuplicateInvoice(currentInvoice, priorOrCompletedInvoices);
+  const hasDuplicateWarning =
+    currentDuplicateMatch.isDuplicate ||
+    Boolean(currentInvoice.classificationReason?.includes('تنبيه تكرار'));
+
   const activeSheetInfo =
     isSales || isPurchases ? getSheetSchemaByType(templateSheets, isSales ? 'مبيعات' : 'مشتريات') : undefined;
 
@@ -171,6 +184,13 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
   };
 
   const handleApproveAndNext = async () => {
+    if (currentDuplicateMatch.isDuplicate) {
+      setMsg({
+        type: 'error',
+        text: `لا يمكن اعتماد هذه الفاتورة لأنها مكررة (${currentDuplicateMatch.reason || 'مطابقة لفاتورة سابقة في نفس العملية'})؛ يتم استبعاد الفواتير المكررة من Excel.`,
+      });
+      return;
+    }
     if (needsType) {
       setMsg({ type: 'error', text: 'يرجى تحديد نوع الفاتورة (مبيعات أو مشتريات) قبل الاعتماد.' });
       return;
@@ -224,6 +244,122 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         type: 'error',
         text: err?.message || 'فشل حفظ الفاتورة في التخزين المحلي.',
       });
+    }
+  };
+
+  const handleApproveAllAndExportExcel = async () => {
+    if (exportingAll) return;
+    setExportingAll(true);
+    setMsg(null);
+
+    try {
+      const nowIso = new Date().toISOString();
+      const isEligible = (inv: InvoiceRecord): boolean => {
+        if (inv.status === 'فشل') return false;
+        if (inv.documentType !== 'مبيعات' && inv.documentType !== 'مشتريات') return false;
+        if (!inv.invoiceDate || !inv.invoiceDate.trim()) return false;
+        if (inv.documentType === 'مبيعات') {
+          return (
+            inv.cashSales !== undefined ||
+            inv.networkSales !== undefined ||
+            inv.cashBalance !== undefined ||
+            inv.cashBoxBalance !== undefined ||
+            inv.networkBalance !== undefined ||
+            inv.grandTotal !== undefined
+          );
+        }
+        return true;
+      };
+
+      const acceptedPool: InvoiceRecord[] = [];
+      const keptCompletedIds = new Set<string>();
+      let skippedDuplicates = 0;
+      let skippedIncomplete = 0;
+      let newlyApproved = 0;
+
+      // Pass 1: preserve existing non-duplicate completed invoices first
+      for (const inv of invoices) {
+        if (inv.status === 'مكتملة' && isEligible(inv)) {
+          if (!findDuplicateInvoice(inv, acceptedPool).isDuplicate) {
+            acceptedPool.push(inv);
+            keptCompletedIds.add(inv.id);
+          }
+        }
+      }
+
+      // Pass 2: approve all eligible non-duplicate pending invoices, and keep duplicates unapproved
+      const nextInvoices: InvoiceRecord[] = invoices.map((inv) => {
+        if (keptCompletedIds.has(inv.id)) {
+          return inv;
+        }
+        if (!isEligible(inv)) {
+          skippedIncomplete += 1;
+          return inv;
+        }
+        const dup = findDuplicateInvoice(inv, acceptedPool);
+        if (dup.isDuplicate) {
+          skippedDuplicates += 1;
+          const dupNote = `تنبيه تكرار (مستبعدة من Excel): ${dup.reason || 'مطابقة لفاتورة سابقة'}`;
+          return {
+            ...inv,
+            status: 'تحتاج مراجعة',
+            classificationReason: inv.classificationReason?.includes('تنبيه تكرار')
+              ? inv.classificationReason
+              : dupNote,
+            syncStatus: 'pending',
+            updatedAt: nowIso,
+          };
+        }
+        newlyApproved += 1;
+        const approved: InvoiceRecord = {
+          ...inv,
+          status: 'مكتملة',
+          syncStatus: 'pending',
+          updatedAt: nowIso,
+        };
+        acceptedPool.push(approved);
+        return approved;
+      });
+
+      const updatedOperation: Operation = {
+        ...operation,
+        invoices: nextInvoices,
+        updatedAt: nowIso,
+      };
+      onUpdateOperation(updatedOperation);
+
+      if (acceptedPool.length === 0) {
+        setMsg({
+          type: 'error',
+          text:
+            skippedIncomplete > 0
+              ? `لم يتم العثور على فواتير مكتملة البيانات للاعتماد (${skippedIncomplete} فاتورة ينقصها النوع أو التاريخ).`
+              : 'لا توجد فواتير صالحة للاعتماد والتصدير.',
+        });
+        return;
+      }
+
+      const exportResult = await downloadOperationExcel(updatedOperation);
+      const totalDupSkipped = skippedDuplicates + exportResult.skippedDuplicates;
+      const parts = [
+        newlyApproved > 0
+          ? `تم اعتماد ${newlyApproved} فاتورة وتصدير ${exportResult.exportedCount} فاتورة إلى ملف Excel (${exportResult.fileName}) دفعة واحدة.`
+          : `تم تصدير ${exportResult.exportedCount} فاتورة معتمدة إلى ملف Excel (${exportResult.fileName}) بنجاح.`,
+      ];
+      if (totalDupSkipped > 0) {
+        parts.push(`تم استبعاد ${totalDupSkipped} فاتورة مكررة من الاعتماد ومن ملف Excel.`);
+      }
+      if (skippedIncomplete > 0) {
+        parts.push(`بقيت ${skippedIncomplete} فاتورة للمراجعة لنقص التاريخ أو نوع المستند.`);
+      }
+      setMsg({ type: 'success', text: parts.join(' ') });
+    } catch (err: any) {
+      setMsg({
+        type: 'error',
+        text: err?.message || 'تعذر اعتماد جميع الفواتير وتصدير ملف Excel.',
+      });
+    } finally {
+      setExportingAll(false);
     }
   };
 
@@ -383,9 +519,17 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Warnings for missing critical fields */}
-      {(needsType || missingDate || missingCashNetworkSplit || currentInvoice.errorMessage) && (
-        <div className="mx-1 my-1 max-h-20 shrink-0 space-y-1 overflow-y-auto">
+      {/* Warnings for missing critical fields or duplicates */}
+      {(hasDuplicateWarning || needsType || missingDate || missingCashNetworkSplit || currentInvoice.errorMessage) && (
+        <div className="mx-1 my-1 max-h-24 shrink-0 space-y-1 overflow-y-auto">
+          {hasDuplicateWarning && (
+            <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-900 text-xs font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>
+                فاتورة مكررة ({currentDuplicateMatch.reason || currentInvoice.classificationReason}) — يتم استبعادها تلقائياً من الاعتماد ومن ملف Excel.
+              </span>
+            </div>
+          )}
           {currentInvoice.errorMessage && (
             <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-medium flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
@@ -566,13 +710,31 @@ export const ReviewWorkspace: React.FC<ReviewWorkspaceProps> = ({
                 جميع الأعمدة مقروءة ديناميكياً من القالب الرسمي وتُحفظ لكل فاتورة بشكل مستقل (بدون أي حقول مكررة)
               </p>
             </div>
-            <button
-              onClick={handleApproveAndNext}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm transition hover:bg-emerald-500"
-            >
-              <Save className="w-4 h-4" />
-              <span>حفظ واعتماد الفاتورة لـ Excel</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleApproveAndNext}
+                disabled={exportingAll}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                <span>حفظ واعتماد الفاتورة لـ Excel</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleApproveAllAndExportExcel()}
+                disabled={exportingAll || extractingSingle || invoices.length === 0}
+                className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-[11px] font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
+                title="اعتماد جميع الفواتير الصالحة غير المكررة وتصديرها إلى ملف Excel مرة واحدة"
+              >
+                {exportingAll ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                )}
+                <span>{exportingAll ? 'جاري الاعتماد والتصدير...' : 'اعتماد الكل وحفظها في Excel'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Independent Document Type Selector per Invoice */}

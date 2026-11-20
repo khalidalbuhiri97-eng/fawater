@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 import { normalizeInvoiceDate } from './dateUtils.js';
+import { findDuplicateInvoiceServer } from './invoiceDeduplication.js';
 
 export const SERVER_OFFICIAL_TEMPLATE_PATH = path.resolve(
   process.cwd(),
@@ -371,6 +372,7 @@ export async function generateOfficialExcelOnServer(params: {
   const purBalCol = findColumnByKeywords(purchasesSheetInfo.columns, ['الرصيد']);
 
   const seenIds = new Set<string>(params.alreadyExportedIds || []);
+  const exportedOrBlockedInvoices: any[] = [];
   const entries: ServerExportEntry[] = [];
   let salesWritten = 0;
   let purchasesWritten = 0;
@@ -391,6 +393,11 @@ export async function generateOfficialExcelOnServer(params: {
       continue;
     }
     if (seenIds.has(inv.id)) {
+      exportedOrBlockedInvoices.push(inv);
+      skippedDuplicates++;
+      continue;
+    }
+    if (findDuplicateInvoiceServer(inv, exportedOrBlockedInvoices).isDuplicate) {
       skippedDuplicates++;
       continue;
     }
@@ -444,6 +451,7 @@ export async function generateOfficialExcelOnServer(params: {
       }
 
       seenIds.add(inv.id);
+      exportedOrBlockedInvoices.push(inv);
       entries.push({
         invoiceId: inv.id,
         operationId: params.organizationId,
@@ -508,6 +516,7 @@ export async function generateOfficialExcelOnServer(params: {
       }
 
       seenIds.add(inv.id);
+      exportedOrBlockedInvoices.push(inv);
       entries.push({
         invoiceId: inv.id,
         operationId: params.organizationId,

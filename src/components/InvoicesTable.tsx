@@ -1,21 +1,26 @@
 import React, { useState } from 'react';
-import { Search, Trash2, Edit3 } from 'lucide-react';
+import { Search, Trash2, Edit3, AlertCircle } from 'lucide-react';
 import { DocumentType, Operation } from '../types';
-import { deleteInvoiceImage } from '../services/dbService';
+import { clearOperationInvoicesConfirmed, deleteInvoiceImage } from '../services/dbService';
 
 interface InvoicesTableProps {
   operation: Operation;
   onUpdateOperation: (op: Operation) => void;
   onSelectForReview: (id: string) => void;
+  onInvoicesCleared?: () => void;
 }
 
 export const InvoicesTable: React.FC<InvoicesTableProps> = ({
   operation,
   onUpdateOperation,
   onSelectForReview,
+  onInvoicesCleared,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
+  const [actionError, setActionError] = useState('');
   const invoices = operation.invoices || [];
 
   const filteredInvoices = invoices.filter((inv) => {
@@ -37,6 +42,30 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
       invoices: newInvoices,
       updatedAt: new Date().toISOString(),
     });
+  };
+
+  const handleClearAllInvoices = async () => {
+    setClearingAll(true);
+    setActionError('');
+    try {
+      const updated = await clearOperationInvoicesConfirmed(operation.id);
+      if (updated) {
+        onUpdateOperation(updated);
+      } else {
+        onUpdateOperation({
+          ...operation,
+          invoices: [],
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      setClearConfirmOpen(false);
+      onInvoicesCleared?.();
+    } catch (err: any) {
+      setActionError(err?.message || 'تعذر حذف الفواتير السابقة.');
+      setClearConfirmOpen(false);
+    } finally {
+      setClearingAll(false);
+    }
   };
 
   const handleDocumentTypeChange = (id: string, nextType: DocumentType) => {
@@ -71,7 +100,7 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
           <p className="text-xs text-slate-500">استعرض كافة الفواتير المستخرجة والمعتمدة للتصدير إلى ملف Excel</p>
         </div>
 
-        <div className="flex items-center gap-3 w-full sm:w-auto">
+        <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
           <div className="relative flex-1 sm:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
             <input
@@ -95,8 +124,30 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
               </option>
             ))}
           </select>
+
+          {invoices.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setActionError('');
+                setClearConfirmOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 bg-red-50 text-red-700 hover:bg-red-600 hover:text-white text-xs font-bold transition shrink-0"
+              title="حذف جميع الفواتير السابقة في هذه العملية"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>حذف الفواتير السابقة</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {actionError && (
+        <div className="mx-6 mt-4 p-3 rounded-xl border border-red-200 bg-red-50 text-red-800 text-xs flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{actionError}</span>
+        </div>
+      )}
 
       {filteredInvoices.length === 0 ? (
         <div className="p-12 text-center text-slate-500 text-sm">لا توجد فواتير مطابقة لبحثك.</div>
@@ -212,6 +263,38 @@ export const InvoicesTable: React.FC<InvoicesTableProps> = ({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {clearConfirmOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 text-center">
+            <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 mb-2">حذف الفواتير السابقة لهذه العملية</h3>
+            <p className="text-sm text-slate-500 mb-6">
+              هل تريد حذف جميع الفواتير السابقة ({invoices.length}) وصورها في عملية "{operation.name}"؟ بعد الحذف يمكنك إعادة رفع الصور مجدداً دون اعتبارها مكررة.
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                disabled={clearingAll}
+                onClick={() => setClearConfirmOpen(false)}
+                className="px-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+              >
+                تراجع
+              </button>
+              <button
+                type="button"
+                disabled={clearingAll}
+                onClick={() => void handleClearAllInvoices()}
+                className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold shadow-sm disabled:opacity-50"
+              >
+                {clearingAll ? 'جاري الحذف...' : 'نعم، حذف الفواتير السابقة'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -301,6 +301,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
                 operation={operation}
                 onUpdateOperation={onUpdateOperation}
                 onSelectForReview={onStartReview}
+                onInvoicesCleared={() => onBackgroundJobQueued?.()}
               />
             )}
           </div>
@@ -312,6 +313,7 @@ export const OperationDashboard: React.FC<OperationDashboardProps> = ({
           operation={operation}
           onUpdateOperation={onUpdateOperation}
           onSelectForReview={onStartReview}
+          onInvoicesCleared={() => onBackgroundJobQueued?.()}
         />
       )}
 

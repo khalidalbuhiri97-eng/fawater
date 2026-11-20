@@ -67,6 +67,27 @@ function createEmptyManualInvoice(docType: 'مبيعات' | 'مشتريات'): I
 
 type AiClassificationChoice = 'auto' | 'مبيعات' | 'مشتريات';
 
+async function computeFileSha256(file: File): Promise<string> {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      const buffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+      return Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+  } catch {
+    // Fallback to filename + size matching if subtle crypto is unavailable
+  }
+  return '';
+}
+
+function makeNameSizeKey(name?: string, size?: number): string {
+  const n = String(name || '').trim().toLowerCase();
+  const s = Number(size || 0);
+  return n && s > 0 ? `${n}::${s}` : '';
+}
+
 export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   isOpen,
   initialMode = 'ai',
@@ -82,7 +103,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   // AI mode state
   const [aiDefaultClassification, setAiDefaultClassification] = useState<AiClassificationChoice>('auto');
   const [selectedFiles, setSelectedFiles] = useState<
-    { file: File; classification: AiClassificationChoice }[]
+    { file: File; sha256: string; classification: AiClassificationChoice }[]
   >([]);
   const [extracting, setExtracting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -102,15 +123,18 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const lightboxPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchDistance = useRef<number | null>(null);
+  const fileHashesRef = useRef<WeakMap<File, string>>(new WeakMap());
   const [savingManual, setSavingManual] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [duplicateNotice, setDuplicateNotice] = useState('');
 
 
   useEffect(() => {
     if (isOpen) {
       setMode(initialMode);
       setErrorMsg('');
+      setDuplicateNotice('');
       setManualSuccessMsg('');
       getOfficialTemplate()
         .then((tpl) => {
@@ -138,6 +162,52 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     });
   };
 
+  const filterNonDuplicateFiles = async (incomingFiles: File[], pendingFiles: File[]) => {
+    const existingHashes = new Set<string>();
+    const existingNameSizes = new Set<string>();
+
+    for (const inv of operation.invoices || []) {
+      const sha = inv.extraColumnsData?.imageSha256;
+      if (typeof sha === 'string' && sha.trim()) {
+        existingHashes.add(sha.trim().toLowerCase());
+      }
+      const key = makeNameSizeKey(inv.imageFileName, inv.imageFileSize);
+      if (key) existingNameSizes.add(key);
+    }
+
+    for (const pf of pendingFiles) {
+      let sha = fileHashesRef.current.get(pf) || '';
+      if (!sha) {
+        sha = await computeFileSha256(pf);
+        if (sha) fileHashesRef.current.set(pf, sha);
+      }
+      if (sha) existingHashes.add(sha);
+      const key = makeNameSizeKey(pf.name, pf.size);
+      if (key) existingNameSizes.add(key);
+    }
+
+    const accepted: Array<{ file: File; sha256: string }> = [];
+    let skippedCount = 0;
+
+    for (const file of incomingFiles) {
+      let sha = fileHashesRef.current.get(file) || '';
+      if (!sha) {
+        sha = await computeFileSha256(file);
+        if (sha) fileHashesRef.current.set(file, sha);
+      }
+      const key = makeNameSizeKey(file.name, file.size);
+      if ((sha && existingHashes.has(sha)) || (key && existingNameSizes.has(key))) {
+        skippedCount += 1;
+        continue;
+      }
+      if (sha) existingHashes.add(sha);
+      if (key) existingNameSizes.add(key);
+      accepted.push({ file, sha256: sha });
+    }
+
+    return { accepted, skippedCount };
+  };
+
   // --- Manual Mode Handlers (NEVER calls Gemini) ---
   const loadManualImage = async (file: File) => {
     const base64 = await fileToBase64(file);
@@ -148,18 +218,30 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
 
   const handleManualImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).filter((file) => file.type.startsWith('image/') || file.type === 'application/pdf');
+    e.target.value = '';
     if (!files.length) return;
     setErrorMsg('');
-    setManualFiles((prev) => [...prev, ...files]);
+    setDuplicateNotice('');
     try {
-      if (manualFiles.length === 0 || manualCompletedIndexes.length >= manualFiles.length) {
-        const firstNewIndex = manualFiles.length;
-        setActiveManualImageIndex(firstNewIndex);
-        await loadManualImage(files[0]);
+      const { accepted, skippedCount } = await filterNonDuplicateFiles(files, manualFiles);
+      if (skippedCount > 0) {
+        const msg = `تم استبعاد ${skippedCount} ${skippedCount === 1 ? 'صورة مكررة' : 'صور مكررة'} لأنها موجودة مسبقاً في هذه العملية. يمكنك حذف الفواتير أو العمليات السابقة إذا أردت إعادة رفعها.`;
+        if (accepted.length === 0) {
+          setErrorMsg(msg);
+          return;
+        }
+        setDuplicateNotice(msg);
       }
+      const nextFiles = accepted.map((a) => a.file);
+      const prevLen = manualFiles.length;
+      setManualFiles((prev) => [...prev, ...nextFiles]);
+      if (prevLen === 0 || manualCompletedIndexes.length >= prevLen) {
+        setActiveManualImageIndex(prevLen);
+        await loadManualImage(nextFiles[0]);
+      }
+    } catch {
+      setErrorMsg('تعذر قراءة أحد ملفات الصور المختارة.');
     }
-    catch { setErrorMsg('تعذر قراءة أحد ملفات الصور المختارة.'); }
-    e.target.value = '';
   };
 
   const navigateManualImage = async (direction: -1 | 1) => {
@@ -239,11 +321,18 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     try {
       const nowIso = new Date().toISOString();
       const newId = manualInvoice.id || generateUuid();
+      const activeManualFile = manualFiles[activeManualImageIndex];
+      let manualSha256 = '';
+      if (activeManualFile) {
+        manualSha256 = fileHashesRef.current.get(activeManualFile) || (await computeFileSha256(activeManualFile));
+        if (manualSha256) fileHashesRef.current.set(activeManualFile, manualSha256);
+      }
 
       if (manualImage?.base64) {
         await saveInvoiceImage(newId, manualImage.base64, manualImage.mimeType, {
           organizationId: operation.id,
           fileName: manualImage.fileName,
+          fileSize: activeManualFile?.size,
           enqueueSync: true,
         });
       }
@@ -260,6 +349,11 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         imageBase64: manualImage?.base64,
         imageMimeType: manualImage?.mimeType,
         imageFileName: manualImage?.fileName,
+        imageFileSize: activeManualFile?.size,
+        extraColumnsData: {
+          ...(manualInvoice.extraColumnsData || {}),
+          ...(manualSha256 ? { imageSha256: manualSha256 } : {}),
+        },
         syncStatus: 'pending',
         updatedAt: nowIso,
       };
@@ -323,13 +417,34 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setSelectedFiles((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleAiFilesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAiFilesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).filter((file) => file.type.startsWith('image/') || file.type === 'application/pdf');
+    e.target.value = '';
     if (!files.length) return;
     setErrorMsg('');
-    setSelectedFiles((prev) => [...prev, ...files.map((file) => ({ file, classification: aiDefaultClassification }))]);
-    e.target.value = '';
+    setDuplicateNotice('');
+    try {
+      const { accepted, skippedCount } = await filterNonDuplicateFiles(
+        files,
+        selectedFiles.map((item) => item.file)
+      );
+      if (skippedCount > 0) {
+        const msg = `تم استبعاد ${skippedCount} ${skippedCount === 1 ? 'صورة مكررة' : 'صور مكررة'} لأنها موجودة مسبقاً في هذه العملية. يمكنك حذف الفواتير أو العمليات السابقة إذا أردت إعادة رفعها.`;
+        if (accepted.length === 0) {
+          setErrorMsg(msg);
+          return;
+        }
+        setDuplicateNotice(msg);
+      }
+      setSelectedFiles((prev) => [
+        ...prev,
+        ...accepted.map(({ file, sha256 }) => ({ file, sha256, classification: aiDefaultClassification })),
+      ]);
+    } catch {
+      setErrorMsg('تعذر قراءة أو فحص أحد الملفات المختارة.');
+    }
   };
+
   const handleStartAiExtraction = async () => {
     if (selectedFiles.length === 0 || extracting) return;
     if (selectedFiles.length > 50) { setErrorMsg('الحد الأقصى للدفعة الواحدة 50 فاتورة.'); return; }
@@ -339,12 +454,15 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
     setUploadProgress(0);
     setUploadProgressLabel('تهيئة الرفع الآمن إلى التخزين السحابي...');
     setErrorMsg('');
+    setDuplicateNotice('');
     try {
       const files = selectedFiles.map((item) => {
         if (item.file.size > 15 * 1024 * 1024) throw new Error(`حجم الملف "${item.file.name}" يتجاوز 15 ميغابايت.`);
         return {
           invoiceId: generateUuid(), file: item.file, mimeType: item.file.type || 'image/jpeg',
-          fileName: item.file.name, fileSize: item.file.size, manualDocumentType: item.classification,
+          fileName: item.file.name, fileSize: item.file.size,
+          fileSha256: item.sha256 || fileHashesRef.current.get(item.file) || undefined,
+          manualDocumentType: item.classification,
         };
       });
       const queued = await enqueueAiBackgroundBatch({
@@ -409,6 +527,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 onClick={() => {
                   setMode('manual');
                   setErrorMsg('');
+                  setDuplicateNotice('');
                 }}
                 className={`min-w-0 p-1.5 sm:p-2 rounded-lg border text-right transition flex items-center gap-1.5 ${
                   mode === 'manual'
@@ -434,6 +553,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 onClick={() => {
                   setMode('ai');
                   setErrorMsg('');
+                  setDuplicateNotice('');
                   setManualSuccessMsg('');
                 }}
                 className={`min-w-0 p-1.5 sm:p-2 rounded-lg border text-right transition flex items-center gap-1.5 ${
@@ -468,14 +588,21 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
           )}
 
           {errorMsg && (
-            <div className="p-3.5 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs font-medium flex items-center gap-2">
+            <div className="p-3.5 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs font-medium flex items-center gap-2 shrink-0">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
               <span>{errorMsg}</span>
             </div>
           )}
 
+          {duplicateNotice && (
+            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs font-medium flex items-center gap-2 shrink-0">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{duplicateNotice}</span>
+            </div>
+          )}
+
           {manualSuccessMsg && (
-            <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-medium flex items-center gap-2">
+            <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-medium flex items-center gap-2 shrink-0">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>{manualSuccessMsg}</span>
             </div>
@@ -792,7 +919,13 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-bold text-xs text-slate-700">الملفات المختارة ({selectedFiles.length})</span>
-                    <button onClick={() => setSelectedFiles([])} className="text-xs text-red-600 hover:underline">
+                    <button
+                      onClick={() => {
+                        setSelectedFiles([]);
+                        setDuplicateNotice('');
+                      }}
+                      className="text-xs text-red-600 hover:underline"
+                    >
                       إزالة الكل
                     </button>
                   </div>

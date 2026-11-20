@@ -264,7 +264,7 @@ export const OperationsList: React.FC<OperationsListProps> = ({
             </div>
             <h3 className="text-lg font-bold text-slate-900 mb-2">تأكيد حذف العملية</h3>
             <p className="text-sm text-slate-500 mb-6">
-              هل أنت متأكد من حذف هذه العملية؟ سيتم إزالة كافة السجلات والصور المرتبطة بها محلياً.
+              هل أنت متأكد من حذف هذه العملية؟ سيتم إزالة كافة السجلات والصور المرتبطة بها محلياً ومن السحابة حتى تتمكن من إعادة رفعها لاحقاً دون تكرار.
             </p>
             <div className="flex items-center justify-center gap-3">
               <button

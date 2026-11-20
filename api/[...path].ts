@@ -8,5 +8,12 @@ export const config = {
 
 export default async function handler(req: any, res: any) {
   const app = await serverAppPromise;
-  return app(req, res);
+  return await new Promise<void>((resolve, reject) => {
+    res.once('finish', () => resolve());
+    res.once('close', () => resolve());
+    app(req, res, (err?: any) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 }
